@@ -1,4 +1,4 @@
-# Modern Warfront 载具模型提取工具链  [EGLISH VERSION](https://github.com/YPA1919/ModernWarfront_VehicleExtractor/blob/main/README_EN.md)
+# Modern Warfront 载具模型提取工具链
 
 从 `modern_warfront_*.apk` 里把载具模型和贴图扒出来，输出 OBJ + MTL + PNG。
 
