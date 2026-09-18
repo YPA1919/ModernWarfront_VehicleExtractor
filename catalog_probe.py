@@ -1,8 +1,10 @@
 import base64
+import os
 import json
 import struct
 
-c = json.load(open(r"D:\DeepSeek Harness\mw\catalog.json", encoding="utf-8"))
+HERE = os.path.dirname(os.path.abspath(__file__))
+c = json.load(open(os.path.join(HERE, "catalog.json"), encoding="utf-8"))
 
 
 def sec(name):

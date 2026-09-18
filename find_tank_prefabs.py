@@ -1,21 +1,23 @@
 """Locate tank prefab roots inside data.unity3d and inspect their hierarchy."""
 import collections
+import os
 import json
 import sys
 import time
 
-sys.path.insert(0, r"D:\DeepSeek Harness\mw")
-sys.path.insert(0, r"D:\DeepSeek Harness\mw\pylibs")
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+sys.path.insert(0, os.path.join(HERE, "pylibs"))
 
 import UnityPy
 from UnityPy.helpers import TypeTreeHelper as _TTH
 
 _TTH.read_typetree_boost = None
 
-DATA = r"D:\DeepSeek Harness\mw\bundles\data.unity3d"
+DATA = os.path.join(HERE, "bundles/data.unity3d")
 
 tank_names = set()
-for r in json.load(open(r"D:\DeepSeek Harness\mw\catalog_index.json", encoding="utf-8")):
+for r in json.load(open(os.path.join(HERE, "catalog_index.json"), encoding="utf-8")):
     p = r["path"]
     if p.startswith("Tanks/"):
         tank_names.add(p.split("/")[-1])

@@ -1,5 +1,8 @@
 # Modern Warfront Vehicle Model Extractor
 
+**V1.2 2026.9.18**
+
+
 Pulls vehicle models and textures out of `modern_warfront_*.apk` and writes
 OBJ + MTL + PNG.
 
@@ -131,15 +134,43 @@ After unpacking, **nothing is exported in bulk by default**. Three scopes:
 - **Random N** - with a seed, reproducible (same number = same batch).
 - **All** - every vehicle of the selected kinds.
 
-Two more switches, both on by default:
+Three more switches:
 
 - **Scale x7** (on by default) - one game unit is about 1/7 metre, so x7 gives
   roughly real-world metres: the Leopard2A6MC2 measures 1.573 units, x7 =
   **11.01 m**, while the real tank is 10.97 m (0.4% off). Untick it to keep the
   raw game units. The factor used is written into the OBJ header
-  (`# scale x7`) and into the `scale` field of `manifest.json`;
-  the manifest, so downstream tools can undo it if needed.
-- **Include LOD1/2** (off by default) - see below.
+  (`# scale x7`) and into the `scale` field of the manifest, so downstream tools
+  can undo it if needed.
+- **LOD 0 / 1 / 2** (0 by default) - see below.
+- **No camo net** (off by default).
+
+### LOD: the chosen level is the only one exported
+
+The game swaps to simpler models with distance; LOD0 is the most detailed. The
+radio group picks one level, and that level goes into **its own OBJ** - the three
+levels are not merged:
+
+| Level | Intact | Wreck |
+| --- | --- | --- |
+| LOD0 | `<name>.obj` | `<name>_Wreck.obj` |
+| LOD1 | `<name>_LOD1.obj` | `<name>_LOD1_Wreck.obj` |
+| LOD2 | `<name>_LOD2.obj` | `<name>_LOD2_Wreck.obj` |
+
+Each level is a **complete vehicle**. For the T90A:
+
+| Level | Parts | Vertices | OBJ size |
+| --- | --- | --- | --- |
+| LOD0 | 82 | 54289 | 5.62 MB |
+| LOD1 | 60 | 17930 | 1.73 MB |
+| LOD2 | 59 | 6021 | 0.56 MB |
+
+Parts are assigned by the `_LODn` in their name; parts with no LOD marker (the
+`PKT` machine gun and friends - only 10 across a 40-vehicle sample) are kept in
+every level. This also covers a typo of the game's own:
+`Hull_ERA_Kontakt1_Side_R_01_ROD0` spells LOD0 as **`ROD0`**, so the regex is
+`[LR]OD(\d)`; without that, those ERA blocks would look unmarked and leak into
+every level.
 
 **Search works across every kind**: tanks, jets and helicopters
 (`mi2` -> Mi-28NM / Mi-24SuperHind, `z1` -> WZ10 / Z11WB / Z19E,
@@ -189,9 +220,12 @@ $env:PYTHONIOENCODING = "utf-8"
 & $py export_tanks.py --kind air --only KA50_Helicopter --out D:\out
 & $py export_tanks.py --sample 4 --seed 7 --out D:\out            # 4 random
 & $py export_tanks.py --scale 1 --out D:\out                      # raw game units
+& $py export_tanks.py --lod 1 --out D:\out                        # LOD1 only
 #    --kind: tanks / fighters / helicopters / air / all
-#    --all-lods includes LOD1/2; --no-camo drops the camo net
+#    --lod 0|1|2 which LOD to export (default 0), one OBJ per level
+#    --no-camo drops the camo net
 #    --scale uniform scale factor, default 7 (see below)
+#    --skip-existing skip what is already exported (resume after a native crash)
 
 # 4) Previews and validation (optional)
 & $py make_previews.py --root D:\out
@@ -298,55 +332,75 @@ the third-party dependencies.
 
 The visible meshes are not in the Addressables bundles (those only hold
 colliders). They live in `data.unity3d` -> `resources.assets` (471,725 objects)
-as `Resources/<Kind>/<Name>` prefabs. **Assembly works in three layers**:
+as `Resources/<Kind>/<Name>` prefabs.
+
+**The assembly is Unity static batching, and the code just reads the fields - it
+does no geometric guessing.** Every part's MeshRenderer carries two fields that
+state how it is drawn:
+
+```
+m_StaticBatchInfo(firstSubMesh, subMeshCount)  "I draw the firstSubMesh-th submesh"
+m_StaticBatchRoot                             vertices are baked in this node's space
+```
+
+So there are exactly two rules:
+
+| Case | Placement transform | Submeshes taken |
+| --- | --- | --- |
+| Has StaticBatchInfo (batched) | the **batch root node's** transform | only `[firstSubMesh, firstSubMesh+subMeshCount)` |
+| No StaticBatchInfo (plain mesh, e.g. camo net, searchlight) | the object's own transform | the whole mesh |
+
+Measured over a 60-vehicle sample: of 6214 renderers sharing a mesh, **6212 carry
+the field**, and the ranges tile `0..N-1` exactly, with no overflow.
+
+Batch roots are grouped **per part family**; a vehicle has several:
+
+```
+AHSKrab     root AHSKrab      -> Hull_*            scale (1, 1, 1)
+            root TurretGroup  -> CommandTower_*    world (0, 0.268, -0.201)
+            root BarrelGroup  -> Barrel_*          world (0, 0.353, 0.235)
+            root Cloth01      -> Camo_net_Hull_*   scale (1, 1, 1)
+Type89MLRS  root Cloth01      -> Camo_net_Hull_*   scale (0.01, 0.01, 0.01)   <- key
+```
+
+Type89MLRS's camo net mesh is authored at **100x** and is scaled back down by
+`Cloth01`'s 0.01. That 0.01 is only obtainable from `m_StaticBatchRoot`. Guess it
+wrong and the net blows up 100x out of the vehicle, stretching the whole bounding
+box to 811 units and forcing the preview camera kilometres away - which looks
+like "nothing was exported at all".
+
+> **This section used to describe a different theory**: "group meshes + slot order
+> determine submeshes" and "the mesh's coordinate space decides the placement
+> transform", inferred by checking whether slot *i*'s world position coincided
+> with submesh *i*'s centre. That happened to hold for most vehicles and broke on
+> Type89MLRS. Reading `m_StaticBatchInfo` / `m_StaticBatchRoot` directly removed
+> the guessing; the heuristic code (`choose_mount`, `group_mount`,
+> `resolve_camo_mounts`, `submesh_centres`, `assign_by_position` and 4 more) has
+> been deleted.
 
 ### Layer 0: what tanks and aircraft share, and what they do not
 
 Aircraft (fixed-wing and helicopters) reuse the exact same export path: the
 country is looked up from the collider assets under
 `Assets/Content/Mesh/<Kind>/<Country>/<Name>/`, and the prefab name is the last
-segment of the Resources path (`A10A_Fighter`, `KA50_Helicopter`). Three
+segment of the Resources path (`A10A_Fighter`, `KA50_Helicopter`). Two
 differences:
 
-- Aircraft have almost no **group meshes** (only 4 across all 80, and their
-  submesh/slot counts disagree), so layer 1 rarely applies to them.
 - Their hierarchy is **nested**: `<Name>_Helicopter` (root) -> `<Name>` ->
   `<Name>_Hull_LOD0` -> parts; wings, landing gear and rotors hang off the hull.
   You must walk the `m_Father` chain to get correct transforms.
 - Helicopters have an extra **`blur` group** holding the rotor blur disc
   (see pitfall 6), which must be excluded.
 
-### Layer 1: group meshes + slot order determine submeshes
+### Layer 1: wreck detection follows the hierarchy path
 
-A prefab splits a tank into **slots**, each slot's `MeshFilter` pointing at a
-group mesh. Of 3663 group meshes, **3633 satisfy "submesh count == number of
-slots referencing it"**, and slot *i*'s world position coincides with the
-centre of submesh *i* (error 0.01-0.06).
+Intact and wreck geometry live in the same batched mesh and are told apart by
+name: `Hull_LOD0` and `Hull_Destructed_LOD0` are two submeshes of one mesh. Wreck
+detection cannot rely on the leaf name alone - PzH2000's wreck sits at
+`HullGroup_Destructed/Hull_LOD0` with no "Destructed" in the leaf - so
+`ordered_gameobjects` propagates the flag down each subtree.
 
-> **slot i <-> submesh i, in hierarchy pre-order.**
-
-Intact and wreck geometry share one mesh: `Hull_LOD0` (slot 27) -> sub27 is only
-the suspension arms, while `Hull_Destructed_LOD0` (slot 28) -> sub28 contains the
-wheels and the holes. Wreck detection must look at the **hierarchy path**
-(PzH2000's wreck lives at `HullGroup_Destructed/Hull_LOD0` with no "Destructed"
-in the leaf name).
-
-### Layer 2: the mesh's coordinate space decides the placement transform
-
-A mesh may be authored in vehicle space or in a sub-assembly (turret/gun) space.
-The test is whether the slot world positions coincide with the corresponding
-submesh centres:
-
-- coincide -> already in vehicle space, **do not apply another transform** (identity)
-- do not coincide -> use the **slot without extra offset** (the mount)
-
-> Just picking the "closest to identity slot" fails: ZBD86's hull mesh is in
-> vehicle space but none of its slots sit at the origin, so the whole vehicle
-> was lifted by 0.19 and the hull appeared to float above the tracks.
-> **22 vehicles / 62 group meshes** were affected (BMP1 +0.19, BMPT72 +0.167,
-> 2S19MstaS -0.182, ...) and are now fixed.
-
-### Layer 3: weapons/turrets are separate subsystem prefabs
+### Layer 2: weapons/turrets are separate subsystem prefabs
 
 The game has **662 `SubSystems/<Weapon>_<Vehicle>_<Caliber>`** prefabs (e.g.
 `M3A3_BGM71TOW_152mm`, `Ksp39C_7mm`) mounted at runtime. Tank prefabs therefore
@@ -366,16 +420,15 @@ TOW, the PansirSM/PinakaMk3 mounts, Strv2000's KSP39C) or beside the hull
    MeshFilters. Their meshes are in bone-local space and are placed by the
    renderer's own transform at bind pose.
 
-3. **The camo net is draped normally**: it has a `Cloth` component and a
-   `TankCloth` material, and the prefab stores the already-draped net hugging the
-   hull/turret/barrel. It only looks thin from the side because it lies on the
-   surface. `--no-camo` drops it.
+3. **The camo net is draped normally**: material `TankCloth`, and the prefab stores
+   the already-draped net hugging the hull/turret/barrel. `--no-camo` drops it.
+   49.5% of its texture is transparent, but the **RGB channel is a complete camo
+   leaf pattern** (the RGB under the transparent pixels is ordinary olive/khaki,
+   not black), so in the preview it is simply textured as-is and reads as a normal
+   camo net. It was once alpha-cut, which left only scattered leaves and looked
+   worse than not cutting at all.
 
-4. **When submesh and slot counts disagree** (30/3663), recover the pairing
-   geometrically: submeshes within 0.15 of a slot world position pair directly,
-   the rest are handed to the offset-free slots in order.
-
-5. **Parked spares must be detected by *gap*, not by *envelope*** (only exposed
+4. **Parked spares must be detected by *gap*, not by *envelope*** (only exposed
    by the aircraft). The game parks unmounted spare weapons outside the vehicle
    and they must be dropped, but the rule was once "lateral/longitudinal
    envelope relative to the hull", which also deleted **legitimate protruding
@@ -434,9 +487,29 @@ TOW, the PansirSM/PinakaMk3 mounts, Strv2000's KSP39C) or beside the hull
 9. **`ObjectReader` is unhashable**: UnityPy generates `__eq__` via attrs but no
    `__hash__`. Patched with `ObjectReader.__hash__ = object.__hash__`.
 
-10. **The compiled typetree reader crashes**: `UnityPyBoost.read_typetree` hits
-    an ACCESS_VIOLATION on some ParticleSystems. Switched to the pure-Python
-    fallback.
+10. **The compiled modules crash natively** (this is what "the full export fails
+    halfway" really was). The symptom is the process vanishing with exit code
+    `-1073741819` (`0xC0000005`, ACCESS_VIOLATION) - **Python cannot catch it**, so
+    the GUI can only report "exit code ...". Two sources:
+
+    - `UnityPyBoost`: the typetree reader crashes on some ParticleSystems, and the
+      vertex unpacker `unpack_vertexdata` crashes too. All three entry points are
+      set to None so the pure-Python fallback is used.
+    - **ASTC texture decoding** (the main one): UnityPy defaults to
+      `astc_encoder`, which crashed randomly after 100-200 vehicles on a full run.
+      `faulthandler` pointed at `MeshHelper.get_triangles`, but that is just where
+      the already-corrupted heap happened to blow up, not the cause. Bisecting with
+      `MW_NO_TEX=1` (write models, skip textures) settled it: with textures 5 of 7
+      runs crashed, without them 303/303 completed. `MW_DEBUG_TEX=1` (print each
+      texture's format/size) showed the textures being decoded right before every
+      crash were all ASTC. **Swapping in `texture2ddecoder.decode_astc`** (a
+      different implementation) made full runs pass repeatedly - the two decoders
+      agree to a mean pixel difference of 0.22/255, max 1.
+
+    A native crash cannot be caught, so there are two safety nets:
+    `--skip-existing` for resuming, and the GUI automatically re-running with
+    `--skip-existing` on a non-zero exit (up to 8 rounds, stopping when it stops
+    making progress).
 
 11. **Caches must be cleared between vehicles**: otherwise after ~200 vehicles
     you get memory corruption such as
@@ -463,7 +536,69 @@ Render the exported model from a similar angle and put the two side by side.
 These images come from the game's own artists, so a misplaced part is obvious at
 a glance - the landing-gear bug was found exactly this way.
 
-## 12. Diagnostic and self-test scripts
+Structural validation (no images needed):
+
+```powershell
+& $py validate_models.py --root D:\out --work D:\work
+```
+
+And the cheapest sanity check of all: **look at the bounding-box span** of each
+exported vehicle. A normal tank is 9-15 (exported metre units), bombers scale with
+their real size, and anything in the tens or hundreds means a part was misplaced.
+
+## 12. Live preview
+
+The middle pane is a software-rendered preview (left-drag orbits, wheel zooms,
+right-drag pans) with **two quality tiers**:
+
+| When | Renderer | Cost |
+| --- | --- | --- |
+| While dragging / wireframe | painter's algorithm + PIL polygon fills | ~30-45 ms/frame, keeps up |
+| After release (with "Texture" on) | per-pixel z-buffer + real UV sampling + interpolated normals | see below |
+
+The textured tier runs in a **background thread** as a three-step ladder, so the
+UI never freezes:
+
+```
+on release      the fast tier lands immediately (~90 ms, never a blank pane)
++0.37 s         0.55x texture (soft, but the colours are there)
++0.71 s         1.0x native canvas resolution, sharp
++1.25 s         1.5x supersampled, downsampled for antialiasing
+```
+
+Dragging or zooming again discards the in-flight background work, so images never
+cross. The approach follows `tk2_preview.py` (a standalone, reusable renderer
+using only numpy + Pillow; usable on its own).
+
+### What the renderer does to afford that (T90A: 1.30 s -> 0.46 s)
+
+- **Exact-size bbox bucketing, batched rasterisation**: same-sized triangles are
+  stacked into `(G, bh, bw)` and their barycentrics and depths computed together.
+  The original cost ~60 small numpy calls per triangle (24.5 us measured), so
+  20k triangles spent over 0.5 s purely on call overhead - the bottleneck is
+  **call count, not arithmetic**, which is why lowering the resolution did not
+  help. Padding buckets to powers of two was tried and was *worse* (1.74 s): the
+  wasted pixels ate the gain.
+- **Early depth test**: do the z comparison inside the bucket first, collect the
+  surviving samples, and only then compute colours once. Texture sampling and
+  lighting touch only genuinely visible pixels, so overdraw costs nothing.
+- All material textures are stacked into a single **atlas**, so one fancy index
+  fetches the texels for a whole batch.
+- float32 on the hot paths.
+
+### Details worth knowing
+
+- Textures are `convert("RGB")`-ed **before** resizing: resizing RGBA directly
+  makes Pillow premultiply by alpha, and game textures often have whole regions
+  with alpha 0, which would black out the RGB (road wheels go solid black).
+- Preview textures are downscaled to 512 on the long edge.
+- Two lights: key + fill, shading = `0.32 + 0.62*key + 0.16*fill`.
+- Background is mid grey-blue `(58,64,72)` so dark liveries still show an outline.
+- **The camo net is textured like everything else** (see pitfall 3).
+- Editing the turret/gun offsets on the Tweak tab updates the preview live, with
+  no re-export needed.
+
+## 13. Diagnostic and self-test scripts
 
 Diagnostics honour the `MW_KIND` environment variable (`tanks` / `air` / ...):
 
@@ -491,10 +626,10 @@ Aircraft: `proportions` / `vertical_gap` flag a few, but that validator is tuned
 for tanks (wingspan ratios and ground clearance do not apply to aircraft); each
 model was visually confirmed complete.
 
-## 13. Known trade-offs
+## 14. Known trade-offs
 
-- Only **LOD0** is exported by default; `--all-lods` adds LOD1/2 (they are
-  simplified whole-vehicle copies that overlap LOD0, rarely useful).
+- **LOD is a pick-one choice** (LOD0 by default): each level is a complete vehicle
+  in its own OBJ, see section 3.
 - Damage colliders (`*DamageCollider*` / `*DeathCollider*`), parked spares, the
   supersonic shock cone and rotor blur discs are skipped; the dropped part names
   are recorded in the manifest under `skipped_off_model`.
@@ -504,5 +639,8 @@ model was visually confirmed complete.
 - OBJ carries a single UV set: albedo tiling is baked into `vt`, so secondary
   maps whose tiling differs from the albedo (e.g. `BMP2_track`) appear stretched.
 - Tracks are baked to a static mesh at bind pose; no skinning is kept.
+- The live preview is software-rendered; the painter's-algorithm tier has no depth
+  buffer, so overlapping thin sheets (the camo net) can sort slightly wrong. The
+  z-buffer tier after release does not have that problem.
 - The UI is bilingual (中文 / EN tab), but **script output (console / Log tab)
   is still Chinese**.

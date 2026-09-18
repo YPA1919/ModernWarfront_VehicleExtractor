@@ -1,14 +1,16 @@
 # -*- coding: utf-8 -*-
 """Find widgets that stick out of the right-hand notebook panel (clipped text)."""
 import sys
+import os
 
-sys.path.insert(0, r"D:\DeepSeek Harness\mw")
-sys.path.insert(0, r"D:\DeepSeek Harness\mw\pylibs")
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+sys.path.insert(0, os.path.join(HERE, "pylibs"))
 
 import tkinter as tk
 import tank_gui as G
 
-app = G.App(r"D:\DeepSeek Harness\mw\sample")
+app = G.App(os.path.join(HERE, "sample"))
 app.update_idletasks()
 app.update()
 

@@ -9,14 +9,15 @@ import os
 import shutil
 import zipfile
 
-MW = r"D:\DeepSeek Harness\mw"
-DIST = r"D:\DeepSeek Harness\exe"
+HERE = os.path.dirname(os.path.abspath(__file__))
+MW = HERE
+DIST = os.path.join(os.path.dirname(HERE), "exe")
 NAME = "ModernWarfront_VehicleExtractor"
 APP = os.path.join(DIST, NAME)
-OUT = r"D:\DeepSeek Harness\ModernWarfront_VehicleExtractor_exe.zip"
+OUT = os.path.join(os.path.dirname(HERE), "ModernWarfront_VehicleExtractor_exe.zip")
 
-NOTE = """Modern Warfront 载具模型提取工具 —— 免安装版
-================================================
+NOTE = """Modern Warfront 载具模型提取工具  V1.2 2026.9.18 — 免安装版
+====================================================================
 
 双击 ModernWarfront_VehicleExtractor.exe 就能用，不用装 Python，也不用装依赖。
 （会有一个黑色控制台窗口一闪，被程序自己藏掉了；界面在「日志」页看输出。）
@@ -67,6 +68,13 @@ exe 内置了脚本分发，所以命令行也能跑单个工具：
 数值按车名存在 exe 旁边的 tweaks.json 里，以后全量导出会自动带上。
 「炮塔」= 名字里含 Turret 的部件，「炮管」= Barrel / Gun，机枪不算在内；
 默认炮管跟着炮塔一起动（炮是装在炮塔上的）。
+
+LOD
+---
+游戏按远近切换简化模型，LOD0 最精细。提取页和重导页都有「LOD ○0 ○1 ○2」三个
+单选：**选哪档就只导哪档**，各自一个 OBJ。LOD0 是 <名字>.obj，LOD1/2 带 _LODn
+后缀（<名字>_LOD1.obj 等），残骸在对应名字后加 _Wreck。三档各自都是完整的一台车，
+不是拼接关系。
 
 Blender 出图
 ------------
@@ -146,6 +154,14 @@ exports pick them up automatically. "Turret" means parts whose name contains
 Turret; "gun" means Barrel / Gun, with machine guns excluded. By default the gun
 follows the turret, since the gun is mounted in the turret.
 
+LOD
+---
+The game swaps to simpler models with distance; LOD0 is the most detailed. Both
+the extract tab and the re-export tab have a "LOD 0 / 1 / 2" radio group: the
+chosen level is the only one exported, into its own OBJ. LOD0 is <name>.obj,
+LOD1/2 carry a _LODn suffix (<name>_LOD1.obj and so on), and the wreck adds
+_Wreck to the same name. Each level is a complete vehicle, not a slice.
+
 Blender renders
 ---------------
 Optional. The "Blender render" button looks for a local Blender install
@@ -163,7 +179,7 @@ including the engine's assembly rules and every pitfall hit along the way.
 def main():
     if not os.path.isdir(APP):
         raise SystemExit("没有找到构建产物：%s（先跑 build_exe.py）" % APP)
-    for f in ("README.md", "README_EN.md"):
+    for f in ("README.md", "README_EN.md", "VERSION.txt"):
         src = os.path.join(MW, f)
         if os.path.exists(src):
             shutil.copy2(src, os.path.join(APP, f))

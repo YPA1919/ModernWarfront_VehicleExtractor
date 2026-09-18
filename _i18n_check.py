@@ -1,10 +1,12 @@
 # -*- coding: utf-8 -*-
 """Report Chinese literals in tank_gui.py that are NOT wrapped in tr(...)."""
 import io
+import os
 import re
 import tokenize
 
-SRC = r"D:\DeepSeek Harness\mw\tank_gui.py"
+HERE = os.path.dirname(os.path.abspath(__file__))
+SRC = os.path.join(HERE, "tank_gui.py")
 CJK = re.compile(r"[\u4e00-\u9fff]")
 src = io.open(SRC, encoding="utf-8").read()
 lines = src.splitlines(keepends=True)

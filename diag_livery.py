@@ -1,8 +1,10 @@
 """Try to read the game's own visual-slot mapping (LiveryMeshData / TankData)."""
 import sys
+import os
 
-sys.path.insert(0, r"D:\DeepSeek Harness\mw")
-sys.path.insert(0, r"D:\DeepSeek Harness\mw\pylibs")
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+sys.path.insert(0, os.path.join(HERE, "pylibs"))
 
 import UnityPy
 import export_tanks as E

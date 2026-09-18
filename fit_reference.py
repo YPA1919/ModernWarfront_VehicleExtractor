@@ -11,13 +11,14 @@ import sys
 import numpy as np
 from PIL import Image
 
-sys.path.insert(0, r"D:\DeepSeek Harness\mw")
-sys.path.insert(0, r"D:\DeepSeek Harness\mw\pylibs")
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+sys.path.insert(0, os.path.join(HERE, "pylibs"))
 
 import tank_gui as G
 
-REF = r"D:\DeepSeek Harness\mw\_preview_ref"
-OUT = r"D:\DeepSeek Harness\mw\_fit"
+REF = os.path.join(HERE, "_preview_ref")
+OUT = os.path.join(HERE, "_fit")
 os.makedirs(OUT, exist_ok=True)
 
 PAIRS = [("F16", "F16_Fighter"), ("A10A", "A10A_Fighter"),
@@ -59,7 +60,7 @@ def norm_mask(mask, size=256, box=220):
 
 for ref_name, tank in PAIRS:
     rp = os.path.join(REF, ref_name + ".png")
-    obj = glob.glob(r"D:\DeepSeek Harness\mw\_gear\**\%s.obj" % tank, recursive=True)
+    obj = glob.glob(os.path.join(HERE, "_gear/**/%s.obj") % tank, recursive=True)
     if not os.path.exists(rp) or not obj:
         print("skip", ref_name, " (no ref or no obj)")
         continue

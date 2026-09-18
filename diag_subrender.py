@@ -1,12 +1,14 @@
 """Render individual submeshes of a group mesh side by side, to tell intact
 geometry apart from wreck geometry."""
 import sys
+import os
 
 import numpy as np
 from PIL import Image, ImageDraw
 
-sys.path.insert(0, r"D:\DeepSeek Harness\mw")
-sys.path.insert(0, r"D:\DeepSeek Harness\mw\pylibs")
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+sys.path.insert(0, os.path.join(HERE, "pylibs"))
 
 import export_tanks as E
 from UnityPy.helpers.MeshHelper import MeshHandler
@@ -74,5 +76,6 @@ for mid, subs in groups:
     canvas = Image.new("RGB", (cell * cols, cell), (18, 19, 24))
     for i, (si, ntri, V, t) in enumerate(items):
         draw(canvas, (i * cell, 0), V, t, f"mesh {mid} sub{si}  ({ntri} tris)")
-    canvas.save(rf"D:\DeepSeek Harness\mw\_subs_{mid}.png")
-    print("wrote", rf"D:\DeepSeek Harness\mw\_subs_{mid}.png", "subs", [i[0] for i in items])
+    canvas.save(os.path.join(HERE, "_subs_%s.png" % mid))
+    print("wrote", os.path.join(HERE, "_subs_%s.png" % mid),
+          "subs", [i[0] for i in items])

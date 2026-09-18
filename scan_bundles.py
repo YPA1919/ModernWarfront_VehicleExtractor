@@ -9,8 +9,9 @@ import sys
 import time
 import traceback
 
-sys.path.insert(0, r"D:\DeepSeek Harness\mw")
-sys.path.insert(0, r"D:\DeepSeek Harness\mw\pylibs")
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+sys.path.insert(0, os.path.join(HERE, "pylibs"))
 
 import UnityPy
 
@@ -20,8 +21,8 @@ from UnityPy.helpers import TypeTreeHelper as _TTH
 
 _TTH.read_typetree_boost = None
 
-BUNDLES = r"D:\DeepSeek Harness\mw\bundles"
-OUT = r"D:\DeepSeek Harness\mw\scan\bundles.jsonl"
+BUNDLES = os.path.join(HERE, "bundles")
+OUT = os.path.join(HERE, "scan/bundles.jsonl")
 
 TYPEINFO = {
     "Texture2D": ("m_Width", "m_Height", "m_TextureFormat", "m_MipCount"),

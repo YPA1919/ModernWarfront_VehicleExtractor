@@ -6,8 +6,9 @@ import sys
 import numpy as np
 from PIL import Image, ImageDraw
 
-sys.path.insert(0, r"D:\DeepSeek Harness\mw")
-sys.path.insert(0, r"D:\DeepSeek Harness\mw\pylibs")
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+sys.path.insert(0, os.path.join(HERE, "pylibs"))
 
 import export_tanks as E
 E.set_kind(os.environ.get('MW_KIND', 'tanks'))
@@ -130,7 +131,7 @@ for col, view in enumerate(("side", "top", "iso")):
     dr2 = ImageDraw.Draw(img2)
     draw(img2, dr2, net_v, net_f, centre, span, S, view, None)
     sheet.paste(img2, (col * S, S))
-out = rf"D:\DeepSeek Harness\mw\_net_{E.safe_name(tank)}.png"
+out = os.path.join(HERE, "_net_%s.png" % E.safe_name(tank))
 sheet.save(out)
 print("wrote", out)
 

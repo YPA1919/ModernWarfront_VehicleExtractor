@@ -8,13 +8,15 @@
 import os
 import zipfile
 
-SRC = r"D:\DeepSeek Harness\mw"
+HERE = os.path.dirname(os.path.abspath(__file__))
+SRC = HERE
 ROOT = "ModernWarfront_VehicleExtractor"
-OUT = r"D:\DeepSeek Harness\ModernWarfront_VehicleExtractor源码.zip"
+OUT = os.path.join(os.path.dirname(HERE), "ModernWarfront_VehicleExtractor源码.zip")
 PYLIBS = os.path.join(SRC, "pylibs")
 
 # 文档单独复制：源文件名 -> 包内文件名
-DOCS = {"README.md": "README.md", "README_EN.md": "README_EN.md"}
+DOCS = {"README.md": "README.md", "README_EN.md": "README_EN.md",
+        "VERSION.txt": "VERSION.txt"}
 
 # 依赖里这些是编译/调试中间产物，跑起来用不到
 SKIP_EXT = (".iobj", ".pdb", ".lib", ".exp", ".obj", ".a", ".map")

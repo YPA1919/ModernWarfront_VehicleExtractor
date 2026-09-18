@@ -1,0 +1,7 @@
+V1.2 2026.9.18
+
+Modern Warfront 载具模型提取工具箱
+Modern Warfront Vehicle Extractor
+
+https://github.com/YPA1919/ModernWarfront_VehicleExtractor
+exe 在 Releases 里；源码包解压后先装依赖（见 README.md）。

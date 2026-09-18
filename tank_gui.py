@@ -7,8 +7,7 @@
   2. 三维预览  带贴图软件渲染，左键旋转、滚轮缩放、右键平移；
              可切外观/残骸、可只看某个部件（排查错位特别有用）。
   3. 贴图   右侧贴图墙，双击放大看原图。
-  4. 部件    manifest 里的部件表（网格名/子网格号/顶点/面数/材质/UV 变换），
-             点一行即单独渲染该部件。
+  4. 部件    manifest 里的部件表（网格名/子网格号/顶点/面数/材质/UV 变换），             点一行即单独渲染该部件。
   5. 重导    勾选车辆或用「随机 N 辆」，选 LOD / 去伪装网，后台跑 export_tanks.py，
              输出实时打印；单车的炮塔 / 炮管位置可以在「微调」页推一下。
 
@@ -23,6 +22,7 @@ import math
 import os
 import queue
 import random
+import re
 import subprocess
 import sys
 import threading
@@ -36,6 +36,9 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageTk
 
 import part_groups as PG          # 炮塔/炮管部件判定（导出脚本共用同一份）
+
+# 版本号：界面标题、exe 文件属性、使用说明、仓库里的 VERSION.txt 都用这一个。
+APP_VERSION = "V1.2 2026.9.18"
 
 FROZEN = bool(getattr(sys, "frozen", False))
 if FROZEN:
@@ -209,14 +212,21 @@ EN = {
     "坦克": "Tanks",
     "固定翼": "Jets",
     "直升机": "Helicopters",
-    "含 LOD1/2": "Include LOD1/2",
     "缩放到 7 倍": "Scale x7",
+    "LOD": "LOD",
+    "缩放到 7 倍：游戏里 1 单位 ≈ 1/7 米，×7 之后基本就是米制尺寸。":
+        "Scale x7: 1 game unit is about 1/7 m, so x7 gives roughly metres.",
+    "LOD：游戏按远近切换的简化模型，LOD0 最精细。选哪档就只导哪档，"
+    "各自一个 OBJ；LOD1/2 的文件名带 _LODn 后缀。":
+        "LOD: the game swaps to simpler models with distance; LOD0 is the most "
+        "detailed. Each level is exported on its own into a separate OBJ, and "
+        "LOD1/2 files carry a _LODn suffix.",
     "缩放到 7 倍：1 游戏单位 ≈ 1/7 米，×7 后≈米制"
     "（豹2A6MC2 得 11.01 m，真车 10.97 m）；取消则保持原始单位。":
         "Scale x7: one game unit is about 1/7 m, so x7 gives metres "
         "(Leopard2A6MC2 -> 11.01 m, real tank 10.97 m). Untick to keep raw units.",
-    "种子：同一数字抽到同一批。含 LOD1/2：LOD1/2 与 LOD0 重叠，一般不用。":
-        "Seed: same number, same batch. Include LOD1/2: they overlap LOD0, rarely useful.",
+    "种子：同一数字抽到同一批。":
+        "Seed: the same number draws the same batch.",
     "缩放到 7 倍：游戏里 1 单位 ≈ 1/7 米，×7 之后基本就是米制尺寸。":
         "Scale x7: one game unit is about 1/7 metre, so x7 gives roughly "
         "real-world metres.",
@@ -280,6 +290,18 @@ EN = {
     "把勾选的车辆填入上面的框": "Put picked vehicles into the box above",
     "Blender 出图（上面填的车）": "Blender render (vehicles above)",
     "提示": "Notice",
+    "上贴图": "Texture",
+    "正在按贴图取色…": "Sampling texture colours...",
+    "贴图：开": "Texture: on",
+    "贴图：关": "Texture: off",
+    "贴图渲染中…": "Texture rendering...",
+    "[%s 退出码 %s，已中止]\n": "[%s exited with %s - aborted]\n",
+    "[%s 退出码 %s，改用「跳过已导出」自动续跑]\n":
+        "[%s exited with %s - resuming with \"skip already exported\"]\n",
+    "[%s 退出码 %s，改用「跳过已导出」自动续跑 第 %d 次]\n":
+        "[%s exited with %s - resume attempt %d with \"skip already exported\"]\n",
+    "%s 续跑中": "%s resuming",
+    "%s 失败（退出码 %s）": "%s failed (exit code %s)",
     "缺少依赖": "Missing dependencies",
     "[缺少依赖] 没找到：": "[missing dependencies] not found: ",
     "解包 / 导出 / 校验这几步是在子进程里跑的，子进程需要这些 Python 库。":
@@ -382,14 +404,13 @@ EN = {
         "Pick a folder on the Extract tab (models are written there);\n"
         "vehicles will be listed here after extraction, or click "
         "\u300cRescan output dir\u300d.",
-    "种子：同一数字每次抽到同一批（复现抽样用）。含 LOD1/2：LOD0 最精细，勾上会把 LOD1/LOD2 也写进同一个 OBJ 并和 LOD0 重叠，一般不用。":
-        "Seed: the same number always picks the same batch (reproducible). "
-        "Include LOD1/2: LOD0 is the most detailed; ticking it also writes "
-        "LOD1/LOD2 into the same OBJ where they overlap LOD0 - rarely useful.",
-    "含 LOD1/2：LOD 是游戏按远近切换的简化模型，LOD0 最精细；勾上会把 LOD1/LOD2 一起写进同一个 OBJ，它们和 LOD0 重叠，一般不用。":
-        "Include LOD1/2: LODs are the game's distance-based simplified models; "
-        "LOD0 is the most detailed. Ticking it writes LOD1/LOD2 into the same "
-        "OBJ where they overlap LOD0 - rarely useful.",
+    "种子：同一数字每次抽到同一批（复现抽样用）。":
+        "Seed: the same number always picks the same batch (reproducible).",
+    "LOD：游戏按远近切换的简化模型，LOD0 最精细。选哪档就只导哪档，"
+    "各自一个 OBJ；LOD1/2 的文件名带 _LODn 后缀。":
+        "LOD: the game swaps to simpler models with distance; LOD0 is the most "
+        "detailed. Each level is exported on its own into a separate OBJ, and "
+        "LOD1/2 files carry a _LODn suffix.",
     "随机种子：同一个数字每次抽到同一批，换个数字换一批（用来复现抽样）。":
         "Seed: the same number always picks the same batch (reproducible).",
     "载具列表读的是工作目录里的 catalog_index.json —— 先解包（并勾建索引）才会列出来，解包一次后一直可用。":
@@ -419,11 +440,32 @@ BG = "#20242a"
 BG2 = "#282d35"
 FG = "#d8dde4"
 ACC = "#ffd45e"
-LIGHT = np.array([0.42, 0.78, 0.46])
+LIGHT = np.array([0.35, 0.50, 0.80])
 LIGHT = LIGHT / np.linalg.norm(LIGHT)
+# 第二盏（补光/边缘光），方向和主光错开，暗面不至于死黑
+LIGHT2 = np.array([-0.55, 0.35, -0.75])
+LIGHT2 = LIGHT2 / np.linalg.norm(LIGHT2)
+# 明暗 = 环境 + 主光 + 补光。这两盏灯和系数是照参考实现（tk2_preview）来的，
+# 两档渲染共用，保证拖动和停手后的画面明暗一致。
+SHADE_AMBIENT, SHADE_MAIN, SHADE_RIM = 0.32, 0.62, 0.16
 # 实体预览是否剔除背面（测试时可关掉对比）。省掉约一半多边形，且模型是闭合的话
 # 看不出来 —— 实测轮廓只差 0.23%。
 CULL_BACKFACE = True
+# 实体预览是否按贴图 alpha 做镂空。伪装网那类「树叶枝条」贴图 2/3 是透明的，
+# 当实心画是一坨乱麻；但履带贴图也有镂空（链节之间的缝隙），面比较大，
+# 全剔会把履带剔没。所以只对「透明占比很高」的材质生效（见 alpha_of）。
+ALPHA_CUTOUT = False
+# 说明：以前开着，是因为伪装网那张「树叶枝条」贴图看着像碎点。后来量过才发现
+# 它的 RGB 是**完整的迷彩叶片图案**（透明区的 RGB 也是正常橄榄/卡其，不是黑的），
+# 只是 alpha 标出了网眼。所以直接按 RGB 贴上去就是一张正常的迷彩网，不用抠。
+# 抠了反而只剩零散叶片、比不抠还难看。
+# 实体预览是否按贴图给面上色（用每个面的 UV 采样贴图取平均色）。界面上的
+# 「上贴图」勾选框切的就是这个。
+TEXTURED = False
+# 预览底色。中灰蓝而不是近黑 —— 深色涂装的车在近黑底上轮廓都看不出来。
+BG_PREVIEW = (58, 64, 72)
+# 预览用贴图的最大边长（原图 2048² 缩到 512² 够看，还能提速）
+TEX_MAXEDGE = 512
 PROG_RE = __import__("re").compile(r"PROGRESS\s+(\d+)\s+(\d+)")
 
 
@@ -443,6 +485,7 @@ class TankModel(object):
         self.groups = []            # ordered group names
         self.mtl = {}
         self._tex = {}
+        self._alpha_cache = {}
         self.load()
 
     # -- geometry
@@ -501,6 +544,22 @@ class TankModel(object):
         n = len(self.faces)
         self._all_idx = np.arange(n, dtype=np.int64)
         self._empty_idx = np.zeros(0, dtype=np.int64)
+        # 每个面的材质编号（给 alpha 镂空用）
+        self._mat_names = sorted(set(self.mat_of_face))
+        self._mat_index = {m: i for i, m in enumerate(self._mat_names)}
+        self._mat_ids = np.asarray([self._mat_index.get(m, 0)
+                                    for m in self.mat_of_face], dtype=np.int64)
+        self._alpha_mats = set()
+        for m in self._mat_names:          # 先探一遍，否则渲染时不知道该查谁
+            self.alpha_of(m)
+        self._face_rgb = None              # 贴图取色缓存，第一次用到时算
+        self._vnorm = None                 # 平滑顶点法线缓存（HQ 渲染用）
+        self._atlas = None                 # 贴图图集缓存（批量光栅化用）        # 只有伪装网这类部件才做 alpha 镂空。按**部件名**判定而不是按贴图透明比例
+        # —— 伪装网 49.5%、履带 29~35%，光看比例窗口太窄；履带贴图的镂空是链节
+        # 之间的缝，面又大，误剔会把整条履带剔没。
+        net_re = re.compile(r"camo|cloth|net(?!work)", re.I)
+        self._net_faces = np.asarray([bool(net_re.search(g)) for g in self.group_of_face],
+                                     dtype=bool)
         self._fi_cache = {}
         self._group_idx = {}
         by_group = {}
@@ -562,6 +621,13 @@ class TankModel(object):
         return out
 
     def texture(self, mat):
+        """材质的 baseMap，转成 RGB 的 numpy 数组；长边超过 TEX_MAXEDGE 就缩下来。
+
+        两个坑，照参考实现（tk2_preview）的做法：
+        * 先 convert("RGB") 再缩放 —— 直接缩 RGBA 的话 Pillow 会按 alpha 预乘，
+          游戏贴图 alpha 常是成片 0，RGB 会被抹成纯黑（负重轮整块变黑）。
+        * 预览不需要原始分辨率（2048² 缩到 512² 足够），缩放还能顺带提速。
+        """
         if mat in self._tex:
             return self._tex[mat]
         img = None
@@ -569,9 +635,78 @@ class TankModel(object):
         if rel:
             p = os.path.join(self.dir, rel.replace("\\", "/"))
             if os.path.exists(p):
-                img = np.asarray(Image.open(p).convert("RGB"), dtype=np.float32)
+                try:
+                    im = Image.open(p).convert("RGB")
+                    if max(im.size) > TEX_MAXEDGE:
+                        im.thumbnail((TEX_MAXEDGE, TEX_MAXEDGE), Image.BILINEAR)
+                    img = np.asarray(im, dtype=np.float32)
+                except Exception:
+                    img = None
         self._tex[mat] = img
         return img
+
+    def face_rgb(self):
+        """每个面的贴图颜色 —— 取该面 3 个角 + 中心的 UV 采样平均值。
+
+        OBJ 的三角形很小（这游戏一辆车 4~5 万面），逐面一个颜色已经足够还原
+        迷彩和涂装的花色；真正的逐像素贴图要走 Blender 出图。结果缓存一次。
+        """
+        if self._face_rgb is not None:
+            return self._face_rgb
+        n = len(self.faces)
+        out = np.full((n, 3), 200.0, dtype=np.float32)   # 没贴图时的兜底色
+        if self.uvs is not None and len(self.uvs) and len(self._mat_names):
+            for mi, mat in enumerate(self._mat_names):
+                tex = self.texture(mat)
+                if tex is None:
+                    continue
+                sel = np.nonzero(self._mat_ids == mi)[0]
+                if not len(sel):
+                    continue
+                ti = self.faces[sel][:, :, 1]
+                ok = ((ti >= 0) & (ti < len(self.uvs))).all(axis=1)
+                if not ok.any():
+                    continue
+                sel = sel[ok]
+                uv = self.uvs[self.faces[sel][:, :, 1]]        # (n,3,2)
+                samp = np.concatenate([uv, uv.mean(axis=1, keepdims=True)],
+                                      axis=1)                  # (n,4,2)
+                samp = np.nan_to_num(samp, nan=0.0, posinf=0.0, neginf=0.0)
+                hh, ww = tex.shape[0], tex.shape[1]
+                tx = np.clip((np.mod(samp[:, :, 0], 1.0) * (ww - 1)
+                              ).astype(np.int64), 0, ww - 1)
+                ty = np.clip(((1.0 - np.mod(samp[:, :, 1], 1.0)) * (hh - 1)
+                              ).astype(np.int64), 0, hh - 1)
+                out[sel] = tex[ty, tx].mean(axis=1)
+        self._face_rgb = out
+        return out
+
+    def alpha_of(self, mat):
+        """这个材质的 baseMap 是不是「镂空型」的 -> 不透明掩码（True=画）。
+
+        只有**透明像素占比很高（>50%）**的才算 —— 那是伪装网那种「树叶枝条」贴图
+        （实测 66.8% 透明）。履带贴图也有 alpha，但只占 19.9%（链节之间的缝隙），
+        它的面又大，按镂空剔会把整条履带剔没。阈值低了就是这个后果。
+        """
+        if mat in self._alpha_cache:
+            return self._alpha_cache[mat]
+        res = None
+        rel = self.mtl.get(mat)
+        if rel:
+            p = os.path.join(self.dir, rel.replace("\\", "/"))
+            if os.path.exists(p):
+                try:
+                    im = Image.open(p)
+                    if im.mode in ("RGBA", "LA") or "transparency" in im.info:
+                        a = np.asarray(im.convert("RGBA"))[:, :, 3]
+                        if (a < 128).mean() > 0.20:
+                            res = a >= 128
+                except Exception:
+                    res = None
+        self._alpha_cache[mat] = res
+        if res is not None:
+            self._alpha_mats.add(self._mat_index.get(mat, -1))
+        return res
 
     def texture_files(self):
         d = os.path.join(self.dir, "textures")
@@ -612,8 +747,254 @@ class TankModel(object):
         self._fi_cache[key] = idx
         return idx
 
+    def _vertex_normals(self):
+        """平滑顶点法线（OBJ 里没带 vn，按面法线累加算一次，缓存）。"""
+        if self._vnorm is not None:
+            return self._vnorm
+        V, F = self.verts, self.faces
+        if len(F) == 0 or len(V) == 0:
+            self._vnorm = np.zeros((len(V), 3))
+            return self._vnorm
+        tri = V[F[:, :, 0]]
+        fn = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
+        n = np.zeros((len(V), 3))
+        for k in range(3):
+            np.add.at(n, F[:, k, 0], fn)
+        ln = np.linalg.norm(n, axis=1, keepdims=True)
+        ln[ln == 0] = 1
+        self._vnorm = n / ln
+        return self._vnorm
+
+    def _texture_atlas(self):
+        """把所有材质的贴图竖着拼成一张图集 -> (atlas, {材质: (行偏移, 宽, 高)})。
+
+        批量光栅化时一个桶里可能混着好几个材质。拼成图集后每个像素只要
+        `atlas[行偏移 + vi, ui]` 一次 fancy index 就取到色，不用逐三角形换贴图。
+        """
+        if self._atlas is not None:
+            return self._atlas
+        texs = [(m, self.texture(m)) for m in self._mat_names]
+        wmax = max([t.shape[1] for _m, t in texs if t is not None] or [1])
+        hsum = sum([t.shape[0] for _m, t in texs if t is not None] or [1])
+        atlas = np.zeros((max(1, hsum), max(1, wmax), 3), np.uint8)
+        off = {}
+        y = 0
+        for m, t in texs:
+            if t is None:
+                off[m] = None
+                continue
+            h, w = t.shape[0], t.shape[1]
+            atlas[y:y + h, :w] = np.clip(t, 0, 255).astype(np.uint8)
+            off[m] = (y, w, h)
+            y += h
+        self._atlas = (atlas, off)
+        # 材质编号 -> 图集偏移。取色时按编号向量化查表，不用逐材质做
+        # Python 列表推导（样本一多那段就成瓶颈）
+        oy_a = np.full(len(self._mat_names), -1, np.int64)
+        w_a = np.ones(len(self._mat_names), np.int64)
+        h_a = np.ones(len(self._mat_names), np.int64)
+        for i, m in enumerate(self._mat_names):
+            info = off.get(m)
+            if info is not None:
+                oy_a[i], w_a[i], h_a[i] = info
+        self._atlas_wh = (oy_a, w_a, h_a)
+        return self._atlas
+
+    def render_hq(self, yaw, pitch, zoom, pan, size, only_group=None,
+                  bg_colour=BG_PREVIEW):
+        """逐像素 z-buffer + 真实 UV 贴图 + 法线插值（停手后出图用）。
+
+        相机矩阵和 render() 完全一致，两档取景对得上。
+
+        两处关键优化：
+        * **按包围盒尺寸精确分桶**，同尺寸的三角形摞成 (G, bh, bw) 一起算重心
+          坐标和深度。原本每个三角形约 60 次 numpy 小数组调用（实测 24.5us），
+          2 万个三角形光调用开销就 0.5s 以上；分桶后降一个数量级。
+        * **早深度测试**：先在桶内做 z 比较，把活下来的样本 (重心坐标, 目标像素)
+          收集起来，最后一次性算颜色。这样贴图采样和光照只作用在真正可见的
+          像素上，overdraw 的算力不白花。
+        """
+        if isinstance(size, (tuple, list)):
+            w, h = int(size[0]), int(size[1])
+        else:
+            w = h = int(size)
+        w, h = max(64, w), max(64, h)
+        img = np.empty((h, w, 3), np.float32)
+        img[:] = bg_colour
+        fi = self._face_index(only_group)
+        if len(fi) == 0:
+            return Image.fromarray(img.astype(np.uint8))
+
+        a, b = math.radians(yaw), math.radians(pitch)
+        ca, sa, cb, sb = math.cos(a), math.sin(a), math.cos(b), math.sin(b)
+        ry = np.array([[ca, 0, sa], [0, 1, 0], [-sa, 0, ca]])
+        rx = np.array([[1, 0, 0], [0, cb, -sb], [0, sb, cb]])
+        pts = (self.verts - self.centre) @ (ry.T @ rx.T)
+        sc = (min(w, h) * 0.62) / max(self.span / 2, 1e-6) * zoom
+        px = pts[:, 0] * sc + w / 2 + pan[0]
+        py = -pts[:, 1] * sc + h / 2 + pan[1]
+
+        f = self.faces[fi]
+        X = px[f[:, :, 0]]
+        Y = py[f[:, :, 0]]
+        Z = pts[f[:, :, 0], 2]
+        signed = ((X[:, 1] - X[:, 0]) * (Y[:, 2] - Y[:, 0])
+                  - (X[:, 2] - X[:, 0]) * (Y[:, 1] - Y[:, 0]))
+        minx = np.minimum(np.minimum(X[:, 0], X[:, 1]), X[:, 2])
+        maxx = np.maximum(np.maximum(X[:, 0], X[:, 1]), X[:, 2])
+        miny = np.minimum(np.minimum(Y[:, 0], Y[:, 1]), Y[:, 2])
+        maxy = np.maximum(np.maximum(Y[:, 0], Y[:, 1]), Y[:, 2])
+        vis = ((np.abs(signed) >= 0.4) & (minx <= w) & (maxx >= 0) & (miny <= h)
+               & (maxy >= 0))
+        if CULL_BACKFACE:
+            front = vis & (signed <= 0)
+            if front.sum() >= 0.25 * max(1, int(vis.sum())):
+                vis = front
+        k_all = np.nonzero(vis)[0]
+        if not len(k_all):
+            return Image.fromarray(img.astype(np.uint8))
+
+        bx0 = np.clip(np.floor(minx[k_all]).astype(np.int64), 0, w - 1)
+        by0 = np.clip(np.floor(miny[k_all]).astype(np.int64), 0, h - 1)
+        bx1 = np.clip(np.ceil(maxx[k_all]).astype(np.int64), 0, w - 1)
+        by1 = np.clip(np.ceil(maxy[k_all]).astype(np.int64), 0, h - 1)
+        kbw = bx1 - bx0 + 1
+        kbh = by1 - by0 + 1
+        good = (kbw > 0) & (kbh > 0)
+        k_all, bx0, by0 = k_all[good], bx0[good], by0[good]
+        kbw, kbh = kbw[good], kbh[good]
+        if not len(k_all):
+            return Image.fromarray(img.astype(np.uint8))
+
+        keys = kbw * (h + 2) + kbh
+        order = np.argsort(keys, kind="stable")
+        keys_s, k_s = keys[order], k_all[order]
+        bounds = np.nonzero(np.diff(keys_s))[0] + 1
+        groups = np.split(np.arange(len(k_s)), bounds)
+        kbw_s, kbh_s = kbw[order], kbh[order]
+        bx0_s, by0_s = bx0[order], by0[order]
+
+        uv = self.uvs if self.uvs is not None and len(self.uvs) else None
+        U = uv[f[:, :, 1]] if uv is not None else None
+        N = self._vertex_normals()
+        atlas, atoff = self._texture_atlas()
+        net_face = self._net_faces[fi]
+        light, light2 = LIGHT, LIGHT2
+        zbuf = np.full((h, w), -1e9, np.float32)
+        img_flat = img.reshape(-1, 3)
+
+        for grp in groups:
+            kk = k_s[grp]
+            G = len(kk)
+            bw, bh = int(kbw_s[grp[0]]), int(kbh_s[grp[0]])
+            gx0, gy0 = bx0_s[grp], by0_s[grp]
+            ax, ay, az = X[kk, 0], Y[kk, 0], Z[kk, 0]
+            bx, by, bz = X[kk, 1], Y[kk, 1], Z[kk, 1]
+            cx, cy, cz = X[kk, 2], Y[kk, 2], Z[kk, 2]
+            den = (by - cy) * (ax - cx) + (cx - bx) * (ay - cy)
+            okd = np.abs(den) >= 1e-9
+            if not okd.any():
+                continue
+            den = np.where(okd, den, 1.0)
+
+            lx = ((np.arange(bw) + 0.5)[None, None, :] + gx0[:, None, None]).astype(np.float32)
+            ly = ((np.arange(bh) + 0.5)[None, :, None] + gy0[:, None, None]).astype(np.float32)
+            dx = lx - cx[:, None, None].astype(np.float32)
+            dy = ly - cy[:, None, None].astype(np.float32)
+            dn = den[:, None, None].astype(np.float32)
+            byc = (by - cy)[:, None, None].astype(np.float32)
+            cxb = (cx - bx)[:, None, None].astype(np.float32)
+            cya = (cy - ay)[:, None, None].astype(np.float32)
+            axc = (ax - cx)[:, None, None].astype(np.float32)
+            l0 = (byc * dx + cxb * dy) / dn
+            l1 = (cya * dx + axc * dy) / dn
+            l2 = 1.0 - l0 - l1
+            inside = (l0 >= -1e-6) & (l1 >= -1e-6) & (l2 >= -1e-6)
+            if not inside.any():
+                continue
+            z = (l0 * az[:, None, None].astype(np.float32)
+                 + l1 * bz[:, None, None].astype(np.float32)
+                 + l2 * cz[:, None, None].astype(np.float32))
+
+            # 早深度测试：只留下真正会画上去的样本
+            s_gi, s_ii, s_jj = [], [], []
+            for gi in range(G):
+                if not okd[gi]:
+                    continue
+                y0i, x0i = int(gy0[gi]), int(gx0[gi])
+                sub = zbuf[y0i:y0i + bh, x0i:x0i + bw]
+                mi = inside[gi]
+                zi = z[gi]
+                hits = mi & (zi > sub)
+                if not hits.any():
+                    continue
+                sub[hits] = zi[hits]
+                ii, jj = np.nonzero(hits)
+                s_gi.append(np.full(len(ii), gi, np.int64))
+                s_ii.append(ii)
+                s_jj.append(jj)
+            if not s_gi:
+                continue
+            gi = np.concatenate(s_gi)
+            ii = np.concatenate(s_ii)
+            jj = np.concatenate(s_jj)
+            # 这些样本的重心坐标 + 目标像素
+            q0, q1, q2 = l0[gi, ii, jj], l1[gi, ii, jj], l2[gi, ii, jj]
+            kkq = kk[gi]
+            pix = (gy0[gi] + ii) * w + (gx0[gi] + jj)
+
+            # --- 颜色只给这些可见样本算 ---
+            if U is not None:
+                u = q0 * U[kkq, 0, 0] + q1 * U[kkq, 1, 0] + q2 * U[kkq, 2, 0]
+                v = q0 * U[kkq, 0, 1] + q1 * U[kkq, 1, 1] + q2 * U[kkq, 2, 1]
+                u = np.nan_to_num(np.mod(u, 1.0), nan=0.0, posinf=0.0, neginf=0.0)
+                v = np.nan_to_num(np.mod(1.0 - v, 1.0), nan=0.0, posinf=0.0, neginf=0.0)
+            else:
+                u = v = None
+            col = np.full((len(pix), 3), 150.0, np.float32)
+            if u is not None:
+                oy_a, w_a, h_a = self._atlas_wh
+                mid = self._mat_ids[kkq]                  # 每个样本的材质编号
+                sel = oy_a[mid] >= 0                       # 没有贴图的才用平色
+                if sel.any():
+                    oy = oy_a[mid][sel]
+                    tw = w_a[mid][sel] - 1
+                    th = h_a[mid][sel] - 1
+                    ui = np.clip(u[sel] * tw, 0, tw).astype(np.int32)
+                    vi = np.clip(v[sel] * th, 0, th).astype(np.int32)
+                    col[sel] = atlas[oy + vi, ui].astype(np.float32)
+
+            n0 = N[f[kkq, 0, 0]]
+            n1 = N[f[kkq, 1, 0]]
+            n2 = N[f[kkq, 2, 0]]
+            nx = q0 * n0[:, 0] + q1 * n1[:, 0] + q2 * n2[:, 0]
+            ny = q0 * n0[:, 1] + q1 * n1[:, 1] + q2 * n2[:, 1]
+            nz = q0 * n0[:, 2] + q1 * n1[:, 2] + q2 * n2[:, 2]
+            ln = np.sqrt(nx * nx + ny * ny + nz * nz)
+            ln[ln == 0] = 1
+            lam = np.abs((nx * light[0] + ny * light[1] + nz * light[2]) / ln)
+            rim = np.clip((nx * light2[0] + ny * light2[1] + nz * light2[2]) / ln, 0, 1)
+            col *= (SHADE_AMBIENT + SHADE_MAIN * lam + SHADE_RIM * rim)[:, None]
+            img_flat[pix] = np.clip(col, 0, 255)
+
+        return Image.fromarray(np.clip(img, 0, 255).astype(np.uint8))
+
+    def render_hq_scaled(self, yaw, pitch, zoom, pan, size, only_group=None,
+                         scale=1.0):
+        """按 scale 比例渲一张小图再用 LANCZOS 放大。
+
+        HQ 的耗时里逐像素那部分占一半左右（T90A 实测 350 万像素覆盖），
+        半分辨率就把这部分砍到 1/4 —— 先出这张，用户不用干等。
+        """
+        w, h = int(size[0]), int(size[1])
+        sw, sh = max(64, int(w * scale)), max(64, int(h * scale))
+        im = self.render_hq(yaw, pitch, zoom, pan, (sw, sh), only_group=only_group)
+        if (sw, sh) != (w, h):
+            im = im.resize((w, h), Image.LANCZOS)
+        return im
+
     def render(self, yaw, pitch, zoom, pan, size, mode="solid", only_group=None,
-               max_tris=0, bg_colour=(26, 28, 34)):
+               max_tris=0, bg_colour=BG_PREVIEW):
         # size 可以是整数（正方形）或 (w, h) —— 中间画布是长方形的，填满才够大
         if isinstance(size, (tuple, list)):
             w, h = int(size[0]), int(size[1])
@@ -649,7 +1030,45 @@ class TankModel(object):
         nrm = np.cross(v1 - v0, v2 - v0)
         ln = np.linalg.norm(nrm, axis=1, keepdims=True)
         ln[ln == 0] = 1
-        shade = np.abs((nrm / ln) @ LIGHT)
+        n = nrm / ln
+        lam = np.abs(n @ LIGHT)
+        rim = np.clip(n @ LIGHT2, 0, 1)
+        shade = SHADE_AMBIENT + SHADE_MAIN * lam + SHADE_RIM * rim
+
+        # alpha 镂空：伪装网那类用的是「树叶枝条」贴图（实测 2/3 像素是透明的），
+        # 当实心面片画出来就是一坨乱麻。按每个面的 UV 中心采样 alpha，透明的丢掉，
+        # 这样预览才和游戏里看到的一致。
+        solid_alpha = None
+        net_sel = self._net_faces[fi]
+        if mode != "wire" and ALPHA_CUTOUT and self.uvs is not None \
+                and len(self._alpha_mats) and net_sel.any():
+            mid = self._mat_ids[fi]
+            hit = np.isin(mid, list(self._alpha_mats)) & net_sel
+            if hit.any():
+                solid_alpha = np.ones(len(f), dtype=bool)
+                for mi in np.unique(mid[hit]):
+                    tex = self.alpha_of(self._mat_names[mi])
+                    if tex is None:
+                        continue
+                    sel = np.nonzero(mid == mi)[0]
+                    hh, ww = tex.shape
+                    ti = f[sel][:, :, 1]
+                    ok = ((ti >= 0) & (ti < len(self.uvs))).all(axis=1)
+                    if not ok.any():
+                        continue
+                    sel = sel[ok]
+                    uv = self.uvs[f[sel][:, :, 1]]            # (n,3,2)
+                    # 采 3 个角 + 中心，全部不透明才画这个面 ——
+                    # 只采中心的话网的面太大，还是会连成一片
+                    # （变量名不能叫 pts，那会盖掉上面投影好的顶点数组）
+                    samp = np.concatenate([uv, uv.mean(axis=1, keepdims=True)],
+                                          axis=1)                # (n,4,2)
+                    samp = np.nan_to_num(samp, nan=0.0, posinf=0.0, neginf=0.0)
+                    tx = np.clip((np.mod(samp[:, :, 0], 1.0) * (ww - 1)
+                                  ).astype(np.int64), 0, ww - 1)
+                    ty = np.clip(((1.0 - np.mod(samp[:, :, 1], 1.0)) * (hh - 1)
+                                  ).astype(np.int64), 0, hh - 1)
+                    solid_alpha[sel] = tex[ty, tx].all(axis=1)
 
         # 有向面积：负的一侧朝向镜头。实体模式把背面剔掉 —— 能省掉将近一半
         # 多边形（实测轮廓只差 0.23%），顺带也少一半画家算法的排序错位。
@@ -665,6 +1084,8 @@ class TankModel(object):
         if mode != "wire" and CULL_BACKFACE and keep.sum() < 0.25 * len(signed):
             keep = onscreen
         keep = keep & (np.abs(signed) >= 1.0)   # 亚像素三角形不值得付一次 PIL 调用
+        if solid_alpha is not None:
+            keep = keep & solid_alpha
         if not keep.all():
             k = np.nonzero(keep)[0]
             if len(k) == 0:
@@ -672,6 +1093,7 @@ class TankModel(object):
             x0, y0, x1, y1, x2, y2 = x0[k], y0[k], x1[k], y1[k], x2[k], y2[k]
             shade = shade[k]
             f = f[k]
+            fi = fi[k]                    # 贴图取色要按面索引回查
 
         zc = pts[f[:, :, 0], 2].mean(axis=1)
         order = np.argsort(zc)            # far to near
@@ -688,10 +1110,18 @@ class TankModel(object):
                 line([(t[4], t[5]), (t[0], t[1])], fill=grey)
             return img
 
-        # 贴图不在这里渲染（实时预览只有实体/线框），带贴图的成品图走 Blender
-        g = np.clip(30 + 210 * np.power(sh, 1.3), 0, 255).astype(np.uint8)
-        rgb = np.stack([g, (g * 0.95).astype(np.uint8), (g * 0.86).astype(np.uint8)],
-                       axis=1)
+        # 上贴图时用每个面从贴图采样出来的颜色，乘同一个光照系数 —— 明暗关系和
+        # 纯色模式一致，只是多了迷彩/涂装的花色。没上贴图就走原来的灰白配色。
+        k_sh = (30.0 + 210.0 * np.power(sh, 1.3)) / 255.0
+        if TEXTURED:
+            base = self.face_rgb()[fi[order]].astype(np.float32)
+            # 贴图本身偏暗（游戏里另外叠了光照贴图），加一点环境光再抬亮，
+            # 否则深色涂装的车上褶皱处会糊成一片黑
+            rgb = np.clip(18.0 + base * k_sh[:, None] * 1.45, 0, 255).astype(np.uint8)
+        else:
+            g = np.clip(30 + 210 * np.power(sh, 1.3), 0, 255).astype(np.uint8)
+            rgb = np.stack([g, (g * 0.95).astype(np.uint8),
+                            (g * 0.86).astype(np.uint8)], axis=1)
         # PIL 的 fill 必须是 tuple，tolist() 出来的是 list —— 先转好，
         # 比在循环里现搭 (c[0], c[1], c[2]) 便宜
         colours = [tuple(c) for c in rgb.tolist()]
@@ -871,7 +1301,7 @@ class App(tk.Tk):
 
     def __init__(self, root_dir=""):
         tk.Tk.__init__(self)
-        self.title(tr("Modern Warfront 载具模型提取工具箱"))
+        self.title(tr("Modern Warfront 载具模型提取工具箱") + "  " + APP_VERSION)
         self.geometry("1560x1000")
         self.minsize(1180, 720)     # 再小右栏就会被挤扁
         self.configure(bg=BG)
@@ -879,6 +1309,7 @@ class App(tk.Tk):
         self.model = None
         self.wreck = tk.BooleanVar(value=False)
         self.mode = tk.StringVar(value="solid")
+        self.textured = tk.BooleanVar(value=False)
         self.status = tk.StringVar(value="")
         self.yaw, self.pitch, self.zoom = 35.0, 20.0, 1.0
         self.pan = [0.0, 0.0]
@@ -888,6 +1319,10 @@ class App(tk.Tk):
         self.only_group = None
         self._photo = None
         self._last_key = None
+        # 贴图那档在后台线程渲染，主线程用这个队列收图；_hq_gen 一变就作废旧结果
+        self._hq_q = queue.Queue()
+        self._hq_gen = 0
+        self.after(50, self._hq_poll)
         self._on_done = None
         self.blend_size = "1600x1000"
         self.logq = queue.Queue()
@@ -939,7 +1374,7 @@ class App(tk.Tk):
 
     # ------------------------------------------------------------ 布局
     def _build(self):
-        self.title(tr("Modern Warfront 载具模型提取工具箱"))
+        self.title(tr("Modern Warfront 载具模型提取工具箱") + "  " + APP_VERSION)
         st = ttk.Style(self)
         try:
             st.theme_use("clam")
@@ -973,7 +1408,7 @@ class App(tk.Tk):
         head.pack(fill="x", padx=8, pady=(8, 2))
         self.title_lbl = tk.Label(head, text=tr("（左侧选一辆车）"), bg=BG, fg=ACC, anchor="w")
         self.title_lbl.pack(side="left")
-        self.canvas = tk.Canvas(mid, bg="#1a1c22", highlightthickness=0)
+        self.canvas = tk.Canvas(mid, bg="#%02x%02x%02x" % BG_PREVIEW, highlightthickness=0)
         self.canvas.pack(fill="both", expand=True, padx=8)
         self.canvas.bind("<ButtonPress-1>", lambda e: self.begin_drag(e, "orbit"))
         self.canvas.bind("<B1-Motion>", self.on_drag)
@@ -992,6 +1427,9 @@ class App(tk.Tk):
                            command=self.schedule).pack(side="left")
         tk.Checkbutton(opt, text=tr("残骸"), variable=self.wreck, bg=BG, fg=FG, selectcolor=BG2,
                        activebackground=BG, command=self.load_current).pack(side="left", padx=8)
+        tk.Checkbutton(opt, text=tr("上贴图"), variable=self.textured, bg=BG, fg=FG,
+                       selectcolor=BG2, activebackground=BG,
+                       command=self.toggle_texture).pack(side="left", padx=8)
         ttk.Button(opt, text=tr("复位视角"), command=self.reset_view).pack(side="left", padx=6)
         ttk.Button(opt, text=tr("Blender 出图"), command=self.blender_shot).pack(side="left")
         ttk.Button(opt, text=tr("只看整机"), command=lambda: self.isolate(None)).pack(side="left", padx=6)
@@ -1131,22 +1569,29 @@ class App(tk.Tk):
                        command=self._sync_scope).pack(side="left", padx=(6, 0))
 
         self.im_scale = tk.BooleanVar(value=True)
-        self.im_lods = tk.BooleanVar(value=False)
+        self.im_lod = tk.StringVar(value="0")
         self.im_nocamo = tk.BooleanVar(value=False)
         r2 = tk.Frame(opt, bg=BG)
         r2.pack(fill="x", padx=8)
         tk.Checkbutton(r2, text=tr("缩放到 7 倍"), variable=self.im_scale, bg=BG, fg=FG,
                        selectcolor=BG2, activebackground=BG).pack(side="left")
-        tk.Checkbutton(r2, text=tr("含 LOD1/2"), variable=self.im_lods, bg=BG, fg=FG,
-                       selectcolor=BG2, activebackground=BG).pack(side="left", padx=8)
+        # LOD 三选一：选哪档就只导哪档（不再混在一个 OBJ 里）
+        tk.Label(r2, text=tr("LOD"), bg=BG, fg=FG).pack(side="left", padx=(12, 2))
+        for _lv in ("0", "1", "2"):
+            tk.Radiobutton(r2, text=_lv, variable=self.im_lod, value=_lv, bg=BG, fg=FG,
+                           selectcolor=BG2, activebackground=BG).pack(side="left")
         tk.Checkbutton(r2, text=tr("不要伪装网"), variable=self.im_nocamo, bg=BG, fg=FG,
-                       selectcolor=BG2, activebackground=BG).pack(side="left")
+                       selectcolor=BG2, activebackground=BG).pack(side="left", padx=(12, 0))
         tk.Label(opt, bg=BG, fg="#8fa6c0", justify="left", anchor="w", wraplength=520,
                  text=tr("缩放到 7 倍：1 游戏单位 ≈ 1/7 米，×7 后≈米制"
                          "（豹2A6MC2 得 11.01 m，真车 10.97 m）；取消则保持原始单位。")
                  ).pack(fill="x", padx=10, pady=(2, 0))
         tk.Label(opt, bg=BG, fg="#8fa6c0", justify="left", anchor="w", wraplength=520,
-                 text=tr("种子：同一数字抽到同一批。含 LOD1/2：LOD1/2 与 LOD0 重叠，一般不用。")
+                 text=tr("种子：同一数字抽到同一批。")
+                 ).pack(fill="x", padx=10, pady=(2, 0))
+        tk.Label(opt, bg=BG, fg="#8fa6c0", justify="left", anchor="w", wraplength=520,
+                 text=tr("LOD：游戏按远近切换的简化模型，LOD0 最精细。选哪档就只导哪档，"
+                      "各自一个 OBJ；LOD1/2 的文件名带 _LODn 后缀。")
                  ).pack(fill="x", padx=10, pady=(2, 0))
 
         self.pick_wrap = tk.Frame(opt, bg=BG)
@@ -1480,21 +1925,24 @@ class App(tk.Tk):
                            activebackground=BG,
                            command=self._refresh_pickers).pack(side="left", padx=(0, 8))
         self.ex_scale = tk.BooleanVar(value=True)
-        self.ex_lods = tk.BooleanVar(value=False)
+        self.ex_lod = tk.StringVar(value="0")
         self.ex_nocamo = tk.BooleanVar(value=False)
         row3 = tk.Frame(f, bg=BG)
         row3.pack(fill="x", padx=6, pady=6)
-        for text, var in ((tr("缩放到 7 倍"), self.ex_scale),
-                          (tr("含 LOD1/2"), self.ex_lods),
-                          (tr("不要伪装网"), self.ex_nocamo)):
-            tk.Checkbutton(row3, text=text, variable=var, bg=BG, fg=FG, selectcolor=BG2,
-                           activebackground=BG).pack(side="left", padx=2)
+        tk.Checkbutton(row3, text=tr("缩放到 7 倍"), variable=self.ex_scale, bg=BG, fg=FG,
+                       selectcolor=BG2, activebackground=BG).pack(side="left", padx=2)
+        tk.Label(row3, text=tr("LOD"), bg=BG, fg=FG).pack(side="left", padx=(10, 2))
+        for _lv in ("0", "1", "2"):
+            tk.Radiobutton(row3, text=_lv, variable=self.ex_lod, value=_lv, bg=BG, fg=FG,
+                           selectcolor=BG2, activebackground=BG).pack(side="left")
+        tk.Checkbutton(row3, text=tr("不要伪装网"), variable=self.ex_nocamo, bg=BG, fg=FG,
+                       selectcolor=BG2, activebackground=BG).pack(side="left", padx=(10, 2))
         tk.Label(f, bg=BG, fg="#8fa6c0", justify="left", anchor="w", wraplength=520,
                  text=tr("缩放到 7 倍：游戏里 1 单位 ≈ 1/7 米，×7 之后基本就是米制尺寸。")
                  ).pack(fill="x", padx=6)
         tk.Label(f, bg=BG, fg="#8fa6c0", justify="left", anchor="w", wraplength=520,
-                 text=tr("含 LOD1/2：LOD 是游戏按远近切换的简化模型，LOD0 最精细；勾上会把 "
-                      "LOD1/LOD2 一起写进同一个 OBJ，它们和 LOD0 重叠，一般不用。")
+                 text=tr("LOD：游戏按远近切换的简化模型，LOD0 最精细。选哪档就只导哪档，"
+                      "各自一个 OBJ；LOD1/2 的文件名带 _LODn 后缀。")
                  ).pack(fill="x", padx=6)
         btns = tk.Frame(f, bg=BG)
         btns.pack(fill="x", padx=6)
@@ -1571,12 +2019,13 @@ class App(tk.Tk):
             "scope": self.im_scope.get(), "only": self.ex_only.get(),
             "n": self.im_n.get(), "seed": self.im_seed.get(),
             "ex_n": self.ex_n.get(), "ex_seed": self.ex_seed.get(),
-            "lods": self.im_lods.get(), "nocamo": self.im_nocamo.get(),
+            "lods": self.im_lod.get(), "nocamo": self.im_nocamo.get(),
             "im_scale": self.im_scale.get(), "ex_scale": self.ex_scale.get(),
             "im_kinds": self._im_kinds(), "ex_kinds": self._ex_kinds(),
             "im_flags": (self.im_index.get(), self.im_export.get(),
                          self.im_preview.get()),
-            "ex_flags": (self.ex_lods.get(), self.ex_nocamo.get()),
+            "ex_flags": (self.ex_lod.get(), self.ex_nocamo.get()),
+            "im_lod": self.im_lod.get(),
             "mode": self.mode.get(), "wreck": self.wreck.get(),
             "picked": list(self.picker.picked), "picked2": list(self.picker2.picked),
             "model": self.model.obj_path if self.model else None,
@@ -1594,14 +2043,14 @@ class App(tk.Tk):
         self.im_seed.set(s["seed"])
         self.ex_n.set(s["ex_n"])
         self.ex_seed.set(s["ex_seed"])
-        self.im_lods.set(s["lods"])
+        self.im_lod.set(s.get("im_lod", "0"))
         self.im_nocamo.set(s["nocamo"])
         self.im_scale.set(s.get("im_scale", True))
         self.ex_scale.set(s.get("ex_scale", True))
         self.im_index.set(s["im_flags"][0])
         self.im_export.set(s["im_flags"][1])
         self.im_preview.set(s["im_flags"][2])
-        self.ex_lods.set(s["ex_flags"][0])
+        self.ex_lod.set(s["ex_flags"][0])
         self.ex_nocamo.set(s["ex_flags"][1])
         self.mode.set(s["mode"])
         self.wreck.set(s["wreck"])
@@ -1831,6 +2280,20 @@ class App(tk.Tk):
         self.pan = [0.0, 0.0]
         self.schedule(delay=0)
 
+    def toggle_texture(self):
+        """切换「上贴图」：按贴图给面上色 / 回到纯色。"""
+        global TEXTURED
+        TEXTURED = bool(self.textured.get())
+        if self.model is not None and TEXTURED:
+            self.status.set(tr("正在按贴图取色…"))
+            self.update_idletasks()
+            try:
+                self.model.face_rgb()        # 第一次要算一遍，之后有缓存
+            except Exception:
+                traceback.print_exc()
+        self.status.set(tr("贴图：开") if TEXTURED else tr("贴图：关"))
+        self.schedule(delay=0)
+
     def fill_parts(self):
         tv = self.part_tv
         tv.delete(*tv.get_children())
@@ -1969,6 +2432,9 @@ class App(tk.Tk):
         cw = max(240, self.canvas.winfo_width())
         ch = max(240, self.canvas.winfo_height())
         dragging = bool(getattr(self, "_dragging", False))
+        # 两档：拖动/线框走画家算法（~30ms 跟手）；停手且勾了「上贴图」时走
+        # 逐像素 z-buffer 贴图渲染（~1.5s，但轮子、迷彩的细节才出得来）
+        hq = (TEXTURED and not dragging and self.mode.get() != "wire")
         # 直接按画布的宽高渲染（不再裁成正方形，上下白白空着）。
         # 拖动时也用同样的分辨率和全部面 —— 降分辨率省不下时间，丢面就是破面。
         size = (max(240, cw), max(240, ch))
@@ -1977,14 +2443,31 @@ class App(tk.Tk):
         tw = getattr(self.model, "tweak", None) or {}
         key = (round(self.yaw, 3), round(self.pitch, 3), round(self.zoom, 4),
                round(self.pan[0], 2), round(self.pan[1], 2), self.mode.get(),
-               self.only_group, size, self.model.name,
+               self.only_group, size, self.model.name, TEXTURED, hq,
                tuple(tw.get("turret") or ()), tuple(tw.get("gun") or ()),
                bool(tw.get("follow", True)))
         if key == getattr(self, "_last_key", None) and self._photo is not None:
             return
         self._last_key = key
-        canvas_img = self.model.render(self.yaw, self.pitch, self.zoom, self.pan, size,
-                                       mode=self.mode.get(), only_group=self.only_group)
+        # 先出快的那档（和拖动同款），保证松手瞬间画面就有内容、不空白
+        canvas_img = self.model.render(self.yaw, self.pitch, self.zoom, self.pan,
+                                       size, mode=self.mode.get(),
+                                       only_group=self.only_group)
+        self._show(canvas_img)
+        if hq:
+            # 贴图那档慢（几百毫秒），丢给后台线程做三级梯度。主线程只负责贴图，
+            # 全程不冻界面。
+            self._hq_start(key, size)
+        else:
+            # 这里是关键：拖动/滚轮走的是快档，不会启动新的贴图渲染 ——
+            # 但**必须把代数推一格**，否则上一次贴图渲染跑完时 gen 还等于当前值，
+            # 那张旧角度的图就会被贴上去，表现成「视角突然跳回上一个角度」。
+            self._hq_gen += 1
+            if self.status.get() == tr("贴图渲染中…"):
+                self.status.set("")
+
+    def _show(self, canvas_img):
+        """把渲染结果画到画布上（含左上角那两行信息）。"""
         dr = ImageDraw.Draw(canvas_img)
         dr.text((8, 6), "%s  yaw %.0f  pitch %.0f  zoom %.2f  %s" %
                 (self.model.name, self.yaw, self.pitch, self.zoom,
@@ -2003,6 +2486,50 @@ class App(tk.Tk):
         self._photo = ImageTk.PhotoImage(canvas_img)
         self.canvas.delete("all")
         self.canvas.create_image(0, 0, image=self._photo, anchor="nw")
+
+    def _hq_start(self, key, size):
+        """后台线程出贴图渲染图，三级梯度：
+
+            0.55x   先给个影（贴图花色立刻能看到）
+            1.00x   画布原生分辨率，清晰
+            1.50x   超采样再缩回来，边缘抗锯齿
+
+        批量光栅化 + 早深度测试之后每一级都只有几百毫秒，所以敢连着出三张。
+        """
+        self._hq_gen += 1
+        gen = self._hq_gen
+        model = self.model
+        args = (self.yaw, self.pitch, self.zoom, list(self.pan), tuple(size),
+                self.only_group)
+        self.status.set(tr("贴图渲染中…"))
+        ladder = (0.55, 1.0, 1.5)
+        last = ladder[-1]
+
+        def work():
+            try:
+                for scale in ladder:
+                    if gen != self._hq_gen:
+                        return
+                    im = model.render_hq_scaled(*args, scale)
+                    self._hq_q.put((gen, model, im, scale))
+            except Exception:
+                traceback.print_exc()
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _hq_poll(self):
+        """主线程这边收后台线程出的图（Tk 控件不能跨线程碰）。"""
+        try:
+            while True:
+                gen, model, im, scale = self._hq_q.get_nowait()
+                # 代数对不上（期间又转过视角）或者已经换车了，这张就作废
+                if gen == self._hq_gen and model is self.model:
+                    self._show(im)
+                    if scale >= 1.5:      # 前两级都还没到最终画质，提示先留着
+                        self.status.set("")
+        except queue.Empty:
+            pass
+        self.after(50, self._hq_poll)
 
     # -- Blender 出图（带贴图的成品图） --------------------------------------
     def blender_shot(self):
@@ -2289,8 +2816,7 @@ class App(tk.Tk):
                 except ValueError:
                     messagebox.showerror(tr("参数错误"), tr("随机数量 / seed 必须是整数"))
                     return None
-            if self.im_lods.get():
-                extra.append("--all-lods")
+            extra += ["--lod", self.im_lod.get()]
             if self.im_nocamo.get():
                 extra.append("--no-camo")
             extra += ["--scale", "7" if self.im_scale.get() else "1"]
@@ -2355,8 +2881,7 @@ class App(tk.Tk):
             except ValueError:
                 messagebox.showerror(tr("参数错误"), tr("随机数量 / seed 必须是整数"))
                 return
-        if self.ex_lods.get():
-            extra.append("--all-lods")
+        extra += ["--lod", self.ex_lod.get()]
         if self.ex_nocamo.get():
             extra.append("--no-camo")
         extra += ["--scale", "7" if self.ex_scale.get() else "1"]
@@ -2405,30 +2930,67 @@ class App(tk.Tk):
         self.progress.configure(mode="indeterminate")
         self.progress.start(60)
 
+    def _run_one(self, cmd, env, label):
+        """跑一个子进程，边读输出边报告进度；-> 退出码。"""
+        try:
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT, env=env, cwd=MW,
+                                    text=True, encoding="utf-8", errors="replace",
+                                    bufsize=1)
+        except Exception as exc:
+            self.logq.put(("log", tr("[启动失败] %r\n") % (exc,)))
+            self.logq.put(("phase", tr("启动失败")))
+            return None
+        self._proc = proc
+        try:
+            for line in proc.stdout:
+                m = PROG_RE.search(line)
+                if m:
+                    self.logq.put(("prog", int(m.group(1)), int(m.group(2)), label))
+                self.logq.put(("log", line))
+        except Exception as exc:
+            self.logq.put(("log", tr("[读取输出失败] %r\n") % (exc,)))
+        rc = proc.wait()
+        self._proc = None
+        return rc
+
+    def _pending_count(self):
+        """导出目录里已经有多少辆导好了（用来判断续跑有没有前进）。"""
+        try:
+            return sum(1 for _r, _d, fs in os.walk(self.im_out.get().strip()
+                                                   or self.ex_out.get().strip())
+                       for f in fs if f.endswith(".obj"))
+        except Exception:
+            return None
+
     def _pipeline(self, steps):
         for label, cmd, env in steps:
             self.logq.put(("log", "\n--- %s ---\n$ %s\n" % (label, " ".join(cmd))))
             self.logq.put(("phase", tr("%s 启动中") % label))
-            try:
-                proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
-                                        stderr=subprocess.STDOUT, env=env, cwd=MW,
-                                        text=True, encoding="utf-8", errors="replace",
-                                        bufsize=1)
-            except Exception as exc:
-                self.logq.put(("log", tr("[启动失败] %r\n") % (exc,)))
-                self.logq.put(("phase", tr("启动失败")))
+            rc = self._run_one(cmd, env, label)
+            if rc is None:
                 return
-            self._proc = proc
-            try:
-                for line in proc.stdout:
-                    m = PROG_RE.search(line)
-                    if m:
-                        self.logq.put(("prog", int(m.group(1)), int(m.group(2)), label))
-                    self.logq.put(("log", line))
-            except Exception as exc:
-                self.logq.put(("log", tr("[读取输出失败] %r\n") % (exc,)))
-            rc = proc.wait()
-            self._proc = None
+            # 导出遇上原生崩溃（ACCESS_VIOLATION，Python 捕不到）会整批中断。
+            # 自动带 --skip-existing 续跑：已经导好的跳过，接着导剩下的。
+            # 崩一次大概丢十几辆，所以允许多续几轮，直到跑完或不再前进。
+            tries = 0
+            prev = -1
+            while (rc != 0 and "export_tanks.py" in " ".join(cmd)
+                   and "--skip-existing" not in cmd and tries < 8):
+                left = self._pending_count()
+                if left is not None and left == prev:
+                    break                      # 没有前进，别再空转
+                prev = left
+                tries += 1
+                self.logq.put(("log", tr(
+                    "[%s 退出码 %s，改用「跳过已导出」自动续跑 第 %d 次]\n")
+                    % (label, rc, tries)))
+                cmd2 = list(cmd) + ["--skip-existing"]
+                self.logq.put(("log", "$ %s\n" % " ".join(cmd2)))
+                self.logq.put(("phase", tr("%s 续跑中") % label))
+                rc = self._run_one(cmd2, env, label)
+                if rc is None:
+                    return
             if rc != 0:
                 self.logq.put(("log", tr("[%s 退出码 %s，已中止]\n") % (label, rc)))
                 self.logq.put(("phase", tr("%s 失败（退出码 %s）") % (label, rc)))

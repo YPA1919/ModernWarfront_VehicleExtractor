@@ -6,8 +6,9 @@ import shutil
 import sys
 import time
 
-sys.path.insert(0, r"D:\DeepSeek Harness\mw")
-sys.path.insert(0, r"D:\DeepSeek Harness\mw\pylibs")
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+sys.path.insert(0, os.path.join(HERE, "pylibs"))
 
 import tank_gui as G
 
@@ -20,22 +21,22 @@ for root, _d, files in os.walk(os.path.join(os.path.expanduser("~"), ".dsh", "at
     if APK:
         break
 
-OUT = r"D:\DeepSeek Harness\mw\_pick_out"
+OUT = os.path.join(HERE, "_pick_out")
 shutil.rmtree(OUT, ignore_errors=True)
 PICK = ["T90A", "ZBD86", "M1A2SEPv2"]
 
-app = G.App(r"D:\DeepSeek Harness\mw\sample")
+app = G.App(os.path.join(HERE, "sample"))
 app.update_idletasks()
 app.update()
 app.im_apk.set(APK)
-app.im_work.set(r"D:\DeepSeek Harness\mw")
+app.im_work.set(HERE)
 app.im_out.set(OUT)
 app.im_index.set(True)
 app.im_export.set(True)
 app.im_preview.set(False)
 app.im_validate.set(False)
 app.im_scope.set("picked")
-app.picker.set_names(G.list_tank_names(r"D:\DeepSeek Harness\mw", OUT))
+app.picker.set_names(G.list_tank_names(HERE, OUT))
 for i, n in enumerate(app.picker.shown):
     if n in PICK:
         app.picker.lb.selection_set(i)

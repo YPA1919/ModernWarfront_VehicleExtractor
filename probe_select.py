@@ -1,19 +1,21 @@
 """Decide the selection rule for the canonical tank prefab root."""
 import collections
+import os
 import json
 import sys
 
-sys.path.insert(0, r"D:\DeepSeek Harness\mw")
-sys.path.insert(0, r"D:\DeepSeek Harness\mw\pylibs")
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+sys.path.insert(0, os.path.join(HERE, "pylibs"))
 
 import UnityPy
 from UnityPy.helpers import TypeTreeHelper as _TTH
 
 _TTH.read_typetree_boost = None
 
-env = UnityPy.load(r"D:\DeepSeek Harness\mw\bundles\data.unity3d")
+env = UnityPy.load(os.path.join(HERE, "bundles/data.unity3d"))
 tank_names = {r["path"].split("/")[-1] for r in
-              json.load(open(r"D:\DeepSeek Harness\mw\catalog_index.json", encoding="utf-8"))
+              json.load(open(os.path.join(HERE, "catalog_index.json"), encoding="utf-8"))
               if r["path"].startswith("Tanks/")}
 
 objs = {o.path_id: o for o in env.objects}

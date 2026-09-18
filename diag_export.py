@@ -1,8 +1,10 @@
 import sys
+import os
 import time
 
-sys.path.insert(0, r"D:\DeepSeek Harness\mw")
-sys.path.insert(0, r"D:\DeepSeek Harness\mw\pylibs")
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+sys.path.insert(0, os.path.join(HERE, "pylibs"))
 
 import export_tanks as E
 
@@ -10,7 +12,7 @@ tank = sys.argv[1] if len(sys.argv) > 1 else "KW2Jupiter120"
 
 g = E.GameData()
 tn = {r["path"].split("/")[-1] for r in
-      __import__("json").load(open(r"D:\DeepSeek Harness\mw\catalog_index.json", encoding="utf-8"))
+      __import__("json").load(open(os.path.join(HERE, "catalog_index.json"), encoding="utf-8"))
       if r["path"].startswith("Tanks/")}
 roots = g.root_candidates(tn)
 print("tank in roots:", tank in roots)

@@ -6,8 +6,9 @@ import shutil
 import sys
 import time
 
-sys.path.insert(0, r"D:\DeepSeek Harness\mw")
-sys.path.insert(0, r"D:\DeepSeek Harness\mw\pylibs")
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+sys.path.insert(0, os.path.join(HERE, "pylibs"))
 
 import tank_gui as G
 
@@ -22,14 +23,14 @@ for root, _d, files in os.walk(os.path.join(os.path.expanduser("~"), ".dsh", "at
 print("APK:", APK)
 assert APK and os.path.exists(APK)
 
-OUT = r"D:\DeepSeek Harness\mw\_pipe_out"
+OUT = os.path.join(HERE, "_pipe_out")
 shutil.rmtree(OUT, ignore_errors=True)
 
 app = G.App(G.TANKS_DEFAULT)
 app.update_idletasks()
 app.update()
 app.im_apk.set(APK)
-app.im_work.set(r"D:\DeepSeek Harness\mw")        # bundles already there
+app.im_work.set(HERE)        # bundles already there
 app.im_out.set(OUT)
 app.im_index.set(True)
 app.im_export.set(True)

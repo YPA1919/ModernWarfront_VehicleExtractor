@@ -6,15 +6,16 @@ import time
 import numpy as np
 from PIL import Image, ImageDraw
 
-sys.path.insert(0, r"D:\DeepSeek Harness\mw")
-sys.path.insert(0, r"D:\DeepSeek Harness\mw\pylibs")
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+sys.path.insert(0, os.path.join(HERE, "pylibs"))
 
 import tank_gui as G
 
-OBJ = r"D:\DeepSeek Harness\mw\sample\Russian\T90A\T90A.obj"
+OBJ = os.path.join(HERE, "sample/Russian/T90A/T90A.obj")
 import os
 if not os.path.exists(OBJ):
-    OBJ = r"D:\DeepSeek Harness\mw\sample\Canada\Leopard2A6MC2\Leopard2A6MC2.obj"
+    OBJ = os.path.join(HERE, "sample/Canada/Leopard2A6MC2/Leopard2A6MC2.obj")
 
 m = G.TankModel(OBJ)
 print("model:", m.name, "verts", len(m.verts), "faces", len(m.faces))

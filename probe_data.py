@@ -1,16 +1,18 @@
 """Inspect the data.unity3d container (Resources paths) and whether the tank
 prefab's MeshFilters reference meshes inside the same file."""
 import sys
+import os
 
-sys.path.insert(0, r"D:\DeepSeek Harness\mw")
-sys.path.insert(0, r"D:\DeepSeek Harness\mw\pylibs")
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+sys.path.insert(0, os.path.join(HERE, "pylibs"))
 
 import UnityPy
 from UnityPy.helpers import TypeTreeHelper as _TTH
 
 _TTH.read_typetree_boost = None
 
-env = UnityPy.load(r"D:\DeepSeek Harness\mw\bundles\data.unity3d")
+env = UnityPy.load(os.path.join(HERE, "bundles/data.unity3d"))
 
 for name, cf in env.files.items():
     print("file:", type(cf).__name__, name)

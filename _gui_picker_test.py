@@ -2,13 +2,15 @@
 """Exercise the new vehicle picker: name list, search, multi-select, scope
 switching, and the --only command it produces."""
 import sys
+import os
 
-sys.path.insert(0, r"D:\DeepSeek Harness\mw")
-sys.path.insert(0, r"D:\DeepSeek Harness\mw\pylibs")
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+sys.path.insert(0, os.path.join(HERE, "pylibs"))
 
 import tank_gui as G
 
-app = G.App(r"D:\DeepSeek Harness\mw\sample")
+app = G.App(os.path.join(HERE, "sample"))
 app.update_idletasks()
 app.update()
 

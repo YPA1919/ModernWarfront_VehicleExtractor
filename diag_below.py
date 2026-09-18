@@ -1,11 +1,13 @@
 """Inspect specific parts: mesh local AABB vs slot transform, and the ancestor
 chain, to tell a parked part from a double-offset one."""
 import sys
+import os
 
 import numpy as np
 
-sys.path.insert(0, r"D:\DeepSeek Harness\mw")
-sys.path.insert(0, r"D:\DeepSeek Harness\mw\pylibs")
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+sys.path.insert(0, os.path.join(HERE, "pylibs"))
 
 import export_tanks as E
 

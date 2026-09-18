@@ -21,7 +21,7 @@ Tracks are SkinnedMeshRenderers, not MeshFilters; at prefab rest pose the skinne
 result equals the mesh placed by the renderer's own transform.
 
 Usage:
-    python export_tanks.py [--only A,B] [--limit N] [--all-lods] [--out DIR]
+    python export_tanks.py [--only A,B] [--limit N] [--lod 0|1|2] [--out DIR]
 """
 import argparse
 import collections
@@ -60,6 +60,67 @@ if _ObjectReader.__hash__ is None:
 
 # The compiled typetree reader access-violates on some ParticleSystem objects.
 _TTH.read_typetree_boost = None
+# 编译版 UnityPyBoost 在长跑（几百辆）时会随机触发 ACCESS_VIOLATION
+# （0xC0000005，进程直接没，Python 捕不到），表现就是「全部导出跑到一半失败」。
+# 三个入口全关掉走纯 Python 回退 —— UnityPy 自己的注释也提到 unpack_vertexdata
+# 会崩。代价是读顶点慢一点，但不会再整批失败。
+try:
+    from UnityPy.helpers import MeshHelper as _MeshHelper
+    _MeshHelper.UnityPyBoost = None
+except Exception:
+    pass
+try:
+    from UnityPy.helpers import ArchiveStorageManager as _ASM
+    _ASM.UnityPyBoost = None
+except Exception:
+    pass
+
+# ASTC 贴图 UnityPy 默认用 astc_encoder（编译模块）解，实测全量导出跑到
+# 100~200 辆时进程会随机 ACCESS_VIOLATION 直接没（Python 捕不到，表现就是
+# 「全部导出失败」，而且时好时坏）。换成 texture2ddecoder.decode_astc ——
+# 另一套实现，同一批数据跑全量不再崩。
+try:
+    import texture2ddecoder as _t2d
+    from PIL import Image as _PILImage
+    from UnityPy.export import Texture2DConverter as _T2DC
+
+    def _astc_safe(image_data, width, height, block_size):
+        bw, bh = block_size
+        raw = _t2d.decode_astc(image_data, width, height, bw, bh)
+        return _PILImage.frombytes("RGBA", (width, height), raw, "raw", "BGRA")
+
+    for _fmt in list(_T2DC.CONV_TABLE):
+        if "ASTC" in _fmt.name:
+            _T2DC.CONV_TABLE[_fmt] = (_astc_safe, _T2DC.CONV_TABLE[_fmt][1])
+except Exception:
+    pass
+
+# 换个位置再兜一层：get_triangles 里那句纯 Python 切片会 ACCESS_VIOLATION，
+# 说明 self.m_IndexBuffer / src.m_SubMeshes 底下是失效的缓冲区对象。
+# 进函数先全部拷成普通 list/tuple，断开这层引用。
+try:
+    from UnityPy.helpers.MeshHelper import MeshHandler as _MeshHandler
+    _orig_get_triangles = _MeshHandler.get_triangles
+
+    def _safe_get_triangles(self):
+        ib = getattr(self, "m_IndexBuffer", None)
+        if ib is not None and type(ib) not in (list, tuple):
+            try:
+                self.m_IndexBuffer = list(ib)
+            except Exception:
+                self.m_IndexBuffer = []
+        src = getattr(self, "src", None)
+        subs = getattr(src, "m_SubMeshes", None)
+        if subs is not None and type(subs) is not list:
+            try:
+                src.m_SubMeshes = list(subs)
+            except Exception:
+                pass
+        return _orig_get_triangles(self)
+
+    _MeshHandler.get_triangles = _safe_get_triangles
+except Exception:
+    pass
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 # 打包成 exe 后脚本在临时解包目录里，默认工作目录放到 exe 旁边；
@@ -133,6 +194,15 @@ def progress(done, total):
 # Slots that are never part of the visible model.
 COLLIDER_RE = re.compile(r"(DamageCollider|Collider)", re.I)
 LOD_RE = re.compile(r"LOD[1-9]", re.I)
+# 名字里的 LOD 编号。注意游戏里有手误：`Hull_ERA_Kontakt1_Side_R_01_ROD0`
+# 把 LOD0 打成了 ROD0，所以这里连 R 一起认。
+LOD_NUM_RE = re.compile(r"[LR]OD(\d)", re.I)
+
+
+def lod_of(name):
+    """部件名里的 LOD 编号；没有标记的返回 None（这种各档都留）。"""
+    m = LOD_NUM_RE.search(name or "")
+    return int(m.group(1)) if m else None
 WRECK_RE = re.compile(r"Destructed", re.I)
 # Camo nets are Cloth meshes: the prefab stores their pre-simulation state, which
 # is a flat sheet hovering over the hull rather than the draped net the game
@@ -218,11 +288,6 @@ def median(values):
     return s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2
 
 
-def identity_distance(m):
-    """Squared Frobenius distance of a 4x4 (flat, column major) matrix to identity."""
-    return sum((m[i] - (1.0 if i in (0, 5, 10, 15) else 0.0)) ** 2 for i in range(16))
-
-
 class GameData:
     def __init__(self, path=DATA):
         t0 = time.time()
@@ -240,6 +305,10 @@ class GameData:
         self.mf = {}
         self.mr = {}
         self.smr = {}
+        # StaticBatchInfo(firstSubMesh, subMeshCount)：Unity 静态合批时每个
+        # MeshRenderer 声明自己画哪一段子网格。整车就是这么拼起来的 —— 见 build_plan。
+        self.sbi = {}
+        self.batch_root = {}
         for sf in self.sfs:
             for o in sf.objects.values():
                 tn = o.type.name
@@ -260,6 +329,13 @@ class GameData:
                         if go is not None:
                             self.mr[go] = [r for r in
                                            (try_deref(m) for m in (d.m_Materials or [])) if r]
+                            s = getattr(d, "m_StaticBatchInfo", None)
+                            if s is not None:
+                                self.sbi[go] = (int(getattr(s, "firstSubMesh", 0) or 0),
+                                                int(getattr(s, "subMeshCount", 0) or 0))
+                            rt = try_deref(getattr(d, "m_StaticBatchRoot", None))
+                            if rt is not None:
+                                self.batch_root[go] = rt
                     elif tn == "SkinnedMeshRenderer":
                         d = o.read()
                         go = try_deref(d.m_GameObject)
@@ -331,6 +407,22 @@ class GameData:
                         h = None
                 except Exception:
                     h = None
+            if h is not None:
+                # mesh.m_IndexBuffer 可能是指向 SerializedFile 缓冲区的 memoryview，
+                # 缓冲区释放后再切片就是 ACCESS_VIOLATION（0xC0000005，整批导出
+                # 跑到一半突然进程消失，Python 捕不到）。立刻拷成普通序列断开引用。
+                ib = h.m_IndexBuffer
+                if ib is not None and not isinstance(ib, (list, tuple)):
+                    try:
+                        h.m_IndexBuffer = list(ib)
+                    except Exception:
+                        h = None
+                if h is not None and h.m_Vertices is not None \
+                        and not isinstance(h.m_Vertices, list):
+                    try:
+                        h.m_Vertices = [tuple(v) for v in h.m_Vertices]
+                    except Exception:
+                        h = None
             self._handler_cache[reader] = h
         return self._handler_cache[reader]
 
@@ -457,163 +549,92 @@ def ordered_gameobjects(g, root_go):
     return out
 
 
-def submesh_centres(h):
-    """Centre of every submesh, in mesh space."""
-    V = h.m_Vertices
-    out = []
-    for t in h.get_triangles():
-        idx = sorted({j for tri in t for j in tri})
-        if not idx:
-            out.append(None)
-            continue
-        out.append([sum(V[j][k] for j in idx) / len(idx) for k in range(3)])
-    return out
+# 只写模型不写贴图（排查崩溃用，见 write_model 里的注释）
+NO_TEX = os.environ.get("MW_NO_TEX") == "1"
+# 每张贴图解码前打一行格式/尺寸（定位是哪张贴图解码时崩的）
+DEBUG_TEX = os.environ.get("MW_DEBUG_TEX") == "1"
 
 
-def assign_by_position(g, slots, centres, tol=0.15):
-    """Match submeshes to slots when their counts differ.
+def build_plan(g, order, lod=0, skip_camo=False):
+    """按游戏自己的拼装方式组装模型 —— 不做任何几何推断。
 
-    Slot transforms mirror the pieces' positions in mesh space, so a submesh is
-    matched to the slot it sits on; the leftover submeshes and the slots with no
-    offset (which carry no positional information) are paired up in order.
+    游戏把整车用 Unity **静态合批**烘成一个网格。每个部件的 MeshRenderer 通过
+    `m_StaticBatchInfo(firstSubMesh, subMeshCount)` 声明「我负责画第几段子网格」；
+    合批时顶点已经被变换到合批根（预制体根）的坐标系里，所以：
+
+        * 部件摆放 = identity，顶点已经在正确位置
+        * 只取它声明的那一段子网格
+
+    实测抽查 60 辆车：6214 个共享网格的渲染器里 6212 个带这个字段，且各段
+    firstSubMesh 恰好铺满 0..N-1。这就是游戏真正的拼法。
+
+    没有 StaticBatchInfo 的渲染器是普通网格（非合批件，比如伪装网、探照灯）：
+    整个网格 + 它自己 Transform 的变换。
+
+    `lod` 选出哪一档：每个部件按名字里的 `_LODn` 归到对应档，只留 `lod` 那一档。
+    名字里没有 LOD 标记的（PKT 机枪、`ROD0` 手误那种）各档都保留 —— 全库 40 辆
+    抽查下来只有 10 个，留着比漏掉稳妥。
+
+    每项 = (gameobject, mesh_reader, transform, submesh_indices_or_None, materials)
     """
-    pos = []
-    for s in slots:
-        m = g.world_matrix(g.go2tr.get(s))
-        pos.append((m[12], m[13], m[14]))
-    significant = [i for i, p in enumerate(pos)
-                   if (p[0] ** 2 + p[1] ** 2 + p[2] ** 2) ** 0.5 > 0.02]
-
-    assigned = {}
-    for si, c in enumerate(centres):
-        if c is None:
-            continue
-        best, best_d = None, tol
-        for i in significant:
-            d = sum((c[k] - pos[i][k]) ** 2 for k in range(3)) ** 0.5
-            if d < best_d:
-                best, best_d = i, d
-        if best is not None:
-            assigned[si] = best
-
-    remain_subs = [i for i in range(len(centres)) if i not in assigned]
-    taken = set(assigned.values())
-    remain_slots = [i for i in range(len(slots)) if i not in taken]
-    if remain_subs and not remain_slots and slots:
-        remain_slots = [len(slots) - 1]
-    for k, si in enumerate(remain_subs):
-        assigned[si] = remain_slots[k] if k < len(remain_slots) else remain_slots[-1]
-
-    out = collections.defaultdict(list)
-    for si, i in assigned.items():
-        out[i].append(si)
-    for v in out.values():
-        v.sort()
-    return out
-
-
-def choose_mount(g, mesh_reader, slots):
-    """Pick the transform that places a group mesh correctly.
-
-    A group mesh is authored either in the vehicle's own space - then a slot's
-    world position coincides with the centre of the submesh it selects, and the
-    mesh must NOT be moved again - or in the space of some sub-assembly (turret,
-    gun), in which case the mount is the slot that carries no extra offset.
-    Taking the closest-to-identity slot unconditionally lifts hulls off their
-    running gear (ZBD86 was 0.19 units too high).
-    """
-    fallback = min((g.world_matrix(g.go2tr.get(s)) for s in slots),
-                   key=identity_distance)
-    h = g.handler(mesh_reader)
-    if h is None:
-        return fallback
-    centres = submesh_centres(h)
-    if len(centres) != len(slots):
-        return fallback
-    dists = []
-    for s, c in zip(slots, centres):
-        if c is None:
-            continue
-        m = g.world_matrix(g.go2tr.get(s))
-        p = (m[12], m[13], m[14])
-        if (p[0] ** 2 + p[1] ** 2 + p[2] ** 2) ** 0.5 <= 0.02:
-            continue        # slot carries no offset, no information
-        dists.append(sum((c[k] - p[k]) ** 2 for k in range(3)) ** 0.5)
-    if len(dists) >= 3 and sum(dists) / len(dists) < 0.08:
-        return list(IDENTITY)   # submeshes already live in vehicle space
-    return fallback
-
-
-def build_plan(g, order, all_lods, skip_camo=False):
-    """Return (intact_items, wreck_items).
-
-    Each item is (go, mesh_reader, transform, submesh_indices, materials).
-    """
-    mf_slots = collections.defaultdict(list)
-    smr_slots = collections.defaultdict(list)
-    wreck_of, camo_of, blur_of = {}, {}, {}
-    for go, is_wreck, is_camo, is_blur in order:
-        wreck_of[go] = is_wreck
-        camo_of[go] = is_camo
-        blur_of[go] = is_blur
-        if go in g.mf:
-            mf_slots[g.mf[go]].append(go)
-        if go in g.smr:
-            smr_slots[g.smr[go][0]].append(go)
-
     intact, wreck = [], []
 
-    def keep(go, is_wreck):
-        name = g.go_name.get(go, "")
+    def keep(go, is_wreck, is_camo, is_blur):
+        name = g.go_name.get(go, "") or ""
         if COLLIDER_RE.search(name) or EFFECT_RE.search(name):
             return False
-        if blur_of.get(go, False):
+        if is_blur:
             return False
-        if not all_lods and LOD_RE.search(name):
+        n = lod_of(name)
+        if n is not None and n != lod:
             return False
-        if camo_of.get(go, False) and skip_camo:
+        if is_camo and skip_camo:
             return False
         return True
 
-    for slots_by_mesh in (mf_slots, smr_slots):
-        for mesh_reader, slots in slots_by_mesh.items():
-            mesh = g.mesh(mesh_reader)
-            if mesh is None:
+    for go, is_wreck, is_camo, is_blur in order:
+        if not keep(go, is_wreck, is_camo, is_blur):
+            continue
+        mf = g.mf.get(go)
+        smr = g.smr.get(go)
+        if mf is not None:
+            mesh_reader = mf
+            mats = g.mr.get(go) or g.materials_of(go)
+        elif smr is not None:
+            mesh_reader = smr[0]
+            mats = smr[1]
+        else:
+            continue
+        mesh = g.mesh(mesh_reader)
+        if mesh is None:
+            continue
+        nsub = len(getattr(mesh, "m_SubMeshes", ()) or ())
+
+        first, count = g.sbi.get(go, (0, 0))
+        if count > 0 and nsub > 0:
+            # 静态合批件：顶点烘在**合批根**的坐标系里，只画自己那一段子网格。
+            # 合批根由 m_StaticBatchRoot 直接给出（TurretGroup / BarrelGroup /
+            # Cloth01 / 车体根…），不用猜。Type89MLRS 的伪装网网格是 100 倍画的，
+            # 它的合批根 Cloth01 带 0.01 缩放，套上去正好还原。
+            lo = max(0, min(first, nsub - 1))
+            hi = max(lo + 1, min(first + count, nsub))
+            subs = list(range(lo, hi))
+            rt = g.batch_root.get(go)
+            tr = None
+            if rt is not None:
+                tr = g.go2tr.get(rt)
+                if tr is None and rt in g.tr:
+                    tr = rt
+            mnt = g.world_matrix(tr) if tr is not None else list(IDENTITY)
+        else:
+            # 普通网格（没参与合批）：整个网格，用对象自己的变换
+            subs = None
+            tr = g.go2tr.get(go)
+            if tr is None:
                 continue
-            subs = len(getattr(mesh, "m_SubMeshes", ()) or ())
-            mount = choose_mount(g, mesh_reader, slots)
-            if subs == len(slots) and subs > 1:
-                # slot i selects submesh i; the whole mesh is placed by the mount
-                for i, go in enumerate(slots):
-                    is_wreck = wreck_of.get(go, False)
-                    if not keep(go, is_wreck):
-                        continue
-                    item = (go, mesh_reader, mount, [i], g.materials_of(go))
-                    (wreck if is_wreck else intact).append(item)
-            elif subs == 1:
-                # an ordinary part mesh repeated at each slot transform
-                for go in slots:
-                    is_wreck = wreck_of.get(go, False)
-                    if not keep(go, is_wreck):
-                        continue
-                    item = (go, mesh_reader, g.world_matrix(g.go2tr.get(go)), None,
-                            g.materials_of(go))
-                    (wreck if is_wreck else intact).append(item)
-            else:
-                # counts disagree (rare): recover the pairing from geometry
-                h = g.handler(mesh_reader)
-                if h is None:
-                    continue
-                assign = assign_by_position(g, slots, submesh_centres(h))
-                for si, go in enumerate(slots):
-                    is_wreck = wreck_of.get(go, False)
-                    if not keep(go, is_wreck):
-                        continue
-                    subs_idx = assign.get(si) or []
-                    if not subs_idx:
-                        continue
-                    item = (go, mesh_reader, mount, subs_idx, g.materials_of(go))
-                    (wreck if is_wreck else intact).append(item)
+            mnt = g.world_matrix(tr)
+        item = (go, mesh_reader, mnt, subs, mats)
+        (wreck if is_wreck else intact).append(item)
     return intact, wreck
 
 
@@ -690,6 +711,71 @@ def drop_off_model(g, items):
     return kept, dropped
 
 
+def _tex_expected_bytes(fmt, w, h):
+    """这张贴图按格式至少需要多少字节压缩数据（不含 mip）。
+
+    BC1/DXT1/ETC1/ETC2_RGB 是 4x4 块 8 字节，BC3/BC5/BC7 是 16 字节；
+    ASTC 一律 16 字节一块，块大小看格式名（ASTC_RGB_8x8 -> 8x8）。
+    返回 None 表示这格式不按块算（未压缩 RGBA 之类），不用检查。
+    """
+    name = getattr(fmt, "name", str(fmt))
+    up = name.upper()
+    if "ASTC" in up:
+        m = re.search(r"ASTC_\w*?(\d+)X(\d+)", up)
+        bx, by = (int(m.group(1)), int(m.group(2))) if m else (4, 4)
+        return max(1, (w + bx - 1) // bx) * max(1, (h + by - 1) // by) * 16
+    if up.startswith(("DXT1", "BC1", "ETC", "EAC", "ATC", "PVRTC")):
+        n = 8 if ("DXT1" in up or "BC1" in up or "ETC1" in up
+                  or up in ("ETC2_RGB", "ETC_RGB4")) else 16
+        return max(1, (w + 3) // 4) * max(1, (h + 3) // 4) * n
+    if up.startswith(("DXT5", "BC3", "BC4", "BC5", "BC6", "BC7")):
+        return max(1, (w + 3) // 4) * max(1, (h + 3) // 4) * 16
+    return None
+
+
+def texture_data_available(tex):
+    """这张贴图的数据够不够安全解码。
+
+    编译版解码器（texture2ddecoder / astc_encoder / etcpak）是**按声明的宽高**
+    往输出缓冲区写的：输入哪怕只有几十字节，它照样写满 宽×高×4，于是越界把堆写坏，
+    进程随后随机崩在别处（实测多次落在 MeshHelper.get_triangles），
+    表现就是「全部导出跑到一半失败」，而且时好时坏。
+
+    数据要么在 m_Data 里，要么按 m_StreamData 去 .resS 取；拿到的字节数少于
+    格式所需就跳过这张，不交给解码器。
+    """
+    w = int(getattr(tex, "m_Width", 0) or 0)
+    h = int(getattr(tex, "m_Height", 0) or 0)
+    fmt = getattr(tex, "m_TextureFormat", None)
+    need = _tex_expected_bytes(fmt, w, h) if (w and h) else None
+
+    data = getattr(tex, "m_Data", None)
+    n = len(data) if data else 0
+    if n:
+        return need is None or n >= need
+
+    sd = getattr(tex, "m_StreamData", None)
+    path = getattr(sd, "path", "") if sd is not None else ""
+    size = int(getattr(sd, "size", 0) or 0)
+    if not path:
+        return need is None or need == 0        # 没数据也不用解
+    try:
+        from UnityPy.helpers.ResourceReader import get_resource_data
+        reader = getattr(tex, "object_reader", None)
+        af = getattr(reader, "assets_file", None) if reader is not None else None
+        if af is None:
+            return False
+        blob = get_resource_data(path, af, getattr(sd, "offset", 0), size)
+        got = len(blob) if blob is not None else 0
+    except Exception:
+        return False
+    if got <= 0:
+        return False
+    if need is not None and got < need:
+        return False
+    return True
+
+
 def write_model(g, tank, prepared, outdir, basename, header):
     """Write OBJ + MTL + textures for a set of prepared parts."""
     texdir = os.path.join(outdir, "textures")
@@ -701,6 +787,7 @@ def write_model(g, tank, prepared, outdir, basename, header):
     mtl = [f"# materials for {tank} ({header})\n"]
     written_tex = {}
     mat_seen = set()
+    skipped_tex = set()
     vbase = 0
     total_v = total_f = 0
     parts = []
@@ -742,13 +829,37 @@ def write_model(g, tank, prepared, outdir, basename, header):
                 tname = getattr(tex, "m_Name", None) or f"tex_{tex_reader.path_id}"
                 fname = safe_name(tname) + ".png"
                 saved = written_tex.get(fname)
+                if saved is None and not texture_data_available(tex):
+                    # 流式数据不在（见函数注释）—— 跳过，硬解会把堆写坏
+                    saved = False
+                    written_tex[fname] = False
+                    skipped_tex.add(tname)
                 if saved is None:
+                    if DEBUG_TEX:
+                        # 崩溃前最后一行就是元凶：记下格式/尺寸/数据长度
+                        # （变量名别用 h/n，那会盖掉外层的 MeshHandler / 计数）
+                        try:
+                            dfmt = getattr(tex, "m_TextureFormat", "?")
+                            dw = getattr(tex, "m_Width", -1)
+                            dh = getattr(tex, "m_Height", -1)
+                            dn = len(getattr(tex, "m_Data", b"") or b"")
+                            sys.stderr.write(
+                                "[tex] %-40s fmt=%-22s %dx%d data=%d\n"
+                                % (tname, getattr(dfmt, "name", dfmt), dw, dh, dn))
+                            sys.stderr.flush()
+                        except Exception:
+                            pass
                     try:
+                        # MW_NO_TEX=1 只写模型不写贴图 —— 用来定位崩溃是不是
+                        # 出在贴图解码（texture2ddecoder / etcpak / astc_encoder 是编译模块）
+                        if NO_TEX:
+                            raise RuntimeError("MW_NO_TEX")
                         tex.image.save(os.path.join(texdir, fname))
                         saved = True
                     except Exception as exc:
                         saved = False
-                        print(f"    ! texture {tname}: {type(exc).__name__}: {exc}", flush=True)
+                        if not NO_TEX:
+                            print(f"    ! texture {tname}: {type(exc).__name__}: {exc}", flush=True)
                     written_tex[fname] = saved
                 if saved:
                     slotname = slot.strip("_").lower()
@@ -801,29 +912,32 @@ def write_model(g, tank, prepared, outdir, basename, header):
             "scale": SCALE,
             "turret_offset": list(TURRET_OFFSET), "gun_offset": list(GUN_OFFSET),
             "gun_follows_turret": GUN_FOLLOWS_TURRET,
-            "textures": sorted(k for k, v in written_tex.items() if v)}
+            "textures": sorted(k for k, v in written_tex.items() if v),
+            "skipped_textures": sorted(skipped_tex)}
 
 
-def export_tank(g, tank, root_go, country, outroot, all_lods=False, skip_camo=False):
+def export_tank(g, tank, root_go, country, outroot, lod=0, skip_camo=False):
     g.clear_caches()
     order = ordered_gameobjects(g, root_go)
-    intact_items, wreck_items = build_plan(g, order, all_lods, skip_camo)
+    intact_items, wreck_items = build_plan(g, order, lod, skip_camo)
     if not intact_items and not wreck_items:
         return None
     outdir = os.path.join(outroot, safe_name(country), safe_name(tank))
     os.makedirs(outdir, exist_ok=True)
 
-    result = {"tank": tank, "country": country}
+    # LOD0 用原来的文件名（预览/微调都按这个找），LOD1/2 带后缀区分开
+    base = safe_name(tank) + ("" if lod == 0 else "_LOD%d" % lod)
+    result = {"tank": tank, "country": country, "lod": lod}
     # 外观和残骸共用同一套微调值
     apply_tweaks(tank)
     if intact_items:
         kept, dropped = drop_off_model(g, intact_items)
-        res = write_model(g, tank, kept, outdir, safe_name(tank), "intact LOD0")
+        res = write_model(g, tank, kept, outdir, base, "intact LOD%d" % lod)
         res["skipped_off_model"] = [g.go_name.get(p["it"][0], "?") for p in dropped]
         result["intact"] = res
     if wreck_items:
         kept, dropped = drop_off_model(g, wreck_items)
-        res = write_model(g, tank, kept, outdir, safe_name(tank) + "_Wreck", "wreck LOD0")
+        res = write_model(g, tank, kept, outdir, base + "_Wreck", "wreck LOD%d" % lod)
         res["skipped_off_model"] = [g.go_name.get(p["it"][0], "?") for p in dropped]
         result["wreck"] = res
 
@@ -953,7 +1067,9 @@ def main():
     ap.add_argument("--sample", type=int, default=0,
                     help="export N randomly chosen tanks instead of all")
     ap.add_argument("--seed", type=int, default=7)
-    ap.add_argument("--all-lods", action="store_true")
+    ap.add_argument("--lod", type=int, default=0, choices=(0, 1, 2),
+                    help="导出哪一档 LOD（0/1/2，默认 0）。每档单独出一个 OBJ，"
+                         "LOD1/2 的文件名带 _LODn 后缀")
     ap.add_argument("--no-camo", action="store_true",
                     help="drop camo nets (they are Cloth meshes, but their stored "
                          "state is the draped net and is correct)")
@@ -975,6 +1091,8 @@ def main():
     ap.add_argument("--tweaks", default="", metavar="JSON",
                     help="逐车微调表（GUI 存的那份）：{\"车名\": {\"turret\":[x,y,z], "
                          "\"gun\":[x,y,z], \"follow\":true}}；有它时按车名取，优先于 --turret/--gun")
+    ap.add_argument("--skip-existing", action="store_true",
+                    help="已经导出过的车跳过（原生崩溃后接着导剩下的用）")
     args = ap.parse_args()
     set_kind(args.kind)
     global SCALE, BASE_TURRET, BASE_GUN, BASE_FOLLOW, TWEAKS
@@ -1016,12 +1134,30 @@ def main():
 
     os.makedirs(args.out, exist_ok=True)
     summary, t0 = [], time.time()
+
+    # --skip-existing：已经导出的跳过。原生崩溃会整批中断（Python 捕不到），
+    # 重跑时带上这个就能接着导剩下的。
+    def done_before(n):
+        d = os.path.join(args.out, safe_name(cmap.get(n, "Other")), safe_name(n))
+        p = os.path.join(d, safe_name(n) + ".obj")
+        try:
+            return os.path.getsize(p) > 0
+        except OSError:
+            return False
+
+    if args.skip_existing:
+        todo = [n for n in names if not done_before(n)]
+        if len(todo) != len(names):
+            print("skip-existing: 已有 %d 辆，剩 %d 辆要导"
+                  % (len(names) - len(todo), len(todo)), flush=True)
+        names = todo
+
     progress(0, len(names))
     for i, n in enumerate(names, 1):
         # 具体哪一套（外观/残骸）由 export_tank 自己按模型切换
         try:
             res = export_tank(g, n, roots[n], cmap.get(n, "Other"), args.out,
-                              args.all_lods, args.no_camo)
+                              args.lod, args.no_camo)
         except Exception:
             import traceback
             traceback.print_exc()

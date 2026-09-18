@@ -1,10 +1,12 @@
 """Full renderable inventory of one tank prefab, split by Default / Destructed,
 including SkinnedMeshRenderers, with mesh identity and materials."""
 import collections
+import os
 import sys
 
-sys.path.insert(0, r"D:\DeepSeek Harness\mw")
-sys.path.insert(0, r"D:\DeepSeek Harness\mw\pylibs")
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+sys.path.insert(0, os.path.join(HERE, "pylibs"))
 
 import export_tanks as E
 

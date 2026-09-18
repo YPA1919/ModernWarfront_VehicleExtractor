@@ -1,10 +1,12 @@
 """How are slots mapped to submeshes?  Look at components of the group nodes,
 active state of intact vs wreck slots, and mesh sharing across several tanks."""
 import collections
+import os
 import sys
 
-sys.path.insert(0, r"D:\DeepSeek Harness\mw")
-sys.path.insert(0, r"D:\DeepSeek Harness\mw\pylibs")
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+sys.path.insert(0, os.path.join(HERE, "pylibs"))
 
 import export_tanks as E
 

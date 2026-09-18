@@ -1,8 +1,10 @@
 import collections
+import os
 import re
 import sys
 
-sys.path.insert(0, r"D:\DeepSeek Harness\mw")
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
 from aacatalog import Catalog
 
 cat = Catalog()

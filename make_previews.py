@@ -11,7 +11,8 @@ import time
 import numpy as np
 from PIL import Image, ImageDraw
 
-sys.path.insert(0, r"D:\DeepSeek Harness\mw")
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
 import render_obj as R
 
 

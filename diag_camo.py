@@ -6,8 +6,9 @@ import sys
 import numpy as np
 from PIL import Image
 
-sys.path.insert(0, r"D:\DeepSeek Harness\mw")
-sys.path.insert(0, r"D:\DeepSeek Harness\mw\pylibs")
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+sys.path.insert(0, os.path.join(HERE, "pylibs"))
 
 import export_tanks as E
 E.set_kind(os.environ.get('MW_KIND', 'tanks'))
@@ -93,6 +94,6 @@ for tank in TANKS:
     sheet.paste(a, (0, 0))
     sheet.paste(b, (460, 0))
     sheet.paste(c, (920, 0))
-    out = rf"D:\DeepSeek Harness\mw\_camo_{E.safe_name(tank)}.png"
+    out = os.path.join(HERE, "_camo_%s.png" % E.safe_name(tank))
     sheet.save(out)
     print("   wrote", out)
